@@ -1004,18 +1004,10 @@ private:
     bool flowhold_init(bool ignore_checks);
     void flowhold_run();
     void flowhold_flow_to_angle(Vector2f &angle, bool stick_input);
-    void update_height_estimate(void);
-
-    // minimum assumed height
-    const float height_min = 0.1f;
-
-    // maximum scaling height
-    const float height_max = 3.0f;
 
     AP_Float flow_max;
     AC_PI_2D flow_pi_xy{0.2f, 0.3f, 3000, 5, 0.0025f};
     AP_Float flow_filter_hz;
-    AP_Int8  flow_min_quality;
     AP_Int8  brake_rate_dps;
 
     float quality_filtered;
@@ -1023,18 +1015,6 @@ private:
     uint8_t log_counter;
     bool limited;
     Vector2f xy_I;
-
-    // accumulated INS delta velocity in north-east form since last flow update
-    Vector2f delta_velocity_ne;
-
-    // last flow rate in radians/sec in north-east axis
-    Vector2f last_flow_rate_rps;
-
-    // timestamp of last flow data
-    uint32_t last_flow_ms;
-
-    float last_ins_height;
-    float height_offset;
 
     // are we braking after pilot input?
     bool braking;

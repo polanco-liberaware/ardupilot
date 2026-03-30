@@ -40,11 +40,12 @@ const AP_Param::GroupInfo ModeFlowHold::var_info[] = {
     AP_SUBGROUPINFO(flow_pi_xy, "_XY_",  1, ModeFlowHold, AC_PI_2D),
 
     // @Param: _FLOW_MAX
-    // @DisplayName: FlowHold Flow Rate Max
-    // @Description: Controls maximum apparent flow rate in flowhold
-    // @Range: 0.1 2.5
+    // @DisplayName: FlowHold Velocity Max
+    // @Description: Maximum horizontal velocity (m/s) used as input to the velocity hold controller. NOTE: this parameter was previously optical-flow rate in rad/s with a default of 0.6. If upgrading from optical-flow FlowHold, reset this parameter to 2.0 or the new default will not apply.
+    // @Range: 0.1 5.0
+    // @Units: m/s
     // @User: Standard
-    AP_GROUPINFO("_FLOW_MAX", 2, ModeFlowHold, flow_max, 0.6),
+    AP_GROUPINFO("_FLOW_MAX", 2, ModeFlowHold, flow_max, 2.0),
 
     // @Param: _FILT_HZ
     // @DisplayName: FlowHold Filter Frequency
@@ -54,13 +55,7 @@ const AP_Param::GroupInfo ModeFlowHold::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("_FILT_HZ", 3, ModeFlowHold, flow_filter_hz, 5),
 
-    // @Param: _QUAL_MIN
-    // @DisplayName: FlowHold Flow quality minimum
-    // @Description: Minimum flow quality to use flow position hold
-    // @Range: 0 255
-    // @User: Standard
-    AP_GROUPINFO("_QUAL_MIN", 4, ModeFlowHold, flow_min_quality, 10),
-
+    // 4 was _QUAL_MIN (optical flow quality, removed — EKF health replaces it)
     // 5 was FLOW_SPEED
 
     // @Param: _BRAKE_RATE
@@ -84,7 +79,8 @@ ModeFlowHold::ModeFlowHold(void) : Mode()
 // flowhold_init - initialise flowhold controller
 bool ModeFlowHold::init(bool ignore_checks)
 {
-    if (!copter.optflow.enabled() || !copter.optflow.healthy()) {
+    // Require EKF to have a valid horizontal velocity estimate (EXTNAV source)
+    if (!ignore_checks && !inertial_nav.get_filter_status().flags.horiz_vel) {
         return false;
     }
 
@@ -105,10 +101,6 @@ bool ModeFlowHold::init(bool ignore_checks)
 
     flow_pi_xy.set_dt(1.0/copter.scheduler.get_loop_rate_hz());
 
-    // start with INS height
-    last_ins_height = copter.inertial_nav.get_position_z_up_cm() * 0.01;
-    height_offset = 0;
-
     return true;
 }
 
@@ -119,24 +111,30 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
 {
     uint32_t now = AP_HAL::millis();
 
-    // get corrected raw flow rate
-    Vector2f raw_flow = copter.optflow.flowRate() - copter.optflow.bodyRate();
+    // Get EKF horizontal velocity in earth NE frame (m/s).
+    const Vector3f vel_neu_cms = copter.inertial_nav.get_velocity_neu_cms();
+    Vector2f vel_ef(vel_neu_cms.x * 0.01f, vel_neu_cms.y * 0.01f);
 
-    // limit sensor flow, this prevents oscillation at low altitudes
-    raw_flow.x = constrain_float(raw_flow.x, -flow_max, flow_max);
-    raw_flow.y = constrain_float(raw_flow.y, -flow_max, flow_max);
+    // Rotate to body frame: earth_to_body2D produces [v_forward, v_right].
+    // The optical-flow sensor convention (AP_OpticalFlow_SITL.cpp:89-90) is:
+    //   flowRate.x = -v_right   (negative right = positive roll-axis flow)
+    //   flowRate.y = +v_forward  (forward = positive pitch-axis flow)
+    // Apply the same axis mapping so sensor_flow is in the exact same frame
+    // the original code used — clamp, filter, braking, and PI all unchanged.
+    const Vector2f vel_bf = copter.ahrs.earth_to_body2D(vel_ef);
+    Vector2f sensor_flow(-vel_bf.y, vel_bf.x);
 
-    // filter the flow rate
-    Vector2f sensor_flow = flow_filter.apply(raw_flow);
+    // clamp and filter in the optical-flow axis frame (preserves filter memory
+    // consistency across yaw rotations, matching the original path)
+    sensor_flow.x = constrain_float(sensor_flow.x, -flow_max, flow_max);
+    sensor_flow.y = constrain_float(sensor_flow.y, -flow_max, flow_max);
+    sensor_flow = flow_filter.apply(sensor_flow);
 
-    // scale by height estimate, limiting it to height_min to height_max
-    float ins_height = copter.inertial_nav.get_position_z_up_cm() * 0.01;
-    float height_estimate = ins_height + height_offset;
-
-    // compensate for height, this converts to (approx) m/s
-    sensor_flow *= constrain_float(height_estimate, height_min, height_max);
-
-    // rotate controller input to earth frame
+    // Rotate to earth frame for the PI controller — identical to the original
+    // body_to_earth2D(sensor_flow) call, which treated sensor_flow as a body
+    // vector and rotated it to earth. That is still correct here: sensor_flow
+    // is in body frame (with the optical-flow axis labeling) and body_to_earth2D
+    // maps it to the earth NE frame the PI controller expects.
     Vector2f input_ef = copter.ahrs.body_to_earth2D(sensor_flow);
 
     // run PI controller
@@ -207,11 +205,11 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
 // @Description: FlowHold mode messages
 // @URL: https://ardupilot.org/copter/docs/flowhold-mode.html
 // @Field: TimeUS: Time since system startup
-// @Field: SFx: Filtered flow rate, X-Axis
-// @Field: SFy: Filtered flow rate, Y-Axis
+// @Field: SFx: Filtered adapted optical-flow control channel X, equivalent to negative body-right velocity in m/s
+// @Field: SFy: Filtered adapted optical-flow control channel Y, equivalent to positive body-forward velocity in m/s
 // @Field: Ax: Target lean angle, X-Axis
 // @Field: Ay: Target lean angle, Y-Axis
-// @Field: Qual: Flow sensor quality. If this value falls below FHLD_QUAL_MIN parameter, FlowHold will act just like AltHold.
+// @Field: Qual: EKF horizontal velocity validity flag, reported as 0 when invalid and 255 when valid
 // @Field: Ix: Integral part of PI controller, X-Axis
 // @Field: Iy: Integral part of PI controller, Y-Axis
 
@@ -230,8 +228,6 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
 // should be called at 100hz or more
 void ModeFlowHold::run()
 {
-    update_height_estimate();
-
     // set vertical speed and acceleration limits
     pos_control->set_max_speed_accel_z(-get_pilot_speed_dn(), g.pilot_speed_up, g.pilot_accel_z);
 
@@ -253,12 +249,8 @@ void ModeFlowHold::run()
     // Flow Hold State Machine Determination
     AltHoldModeState flowhold_state = get_alt_hold_state(target_climb_rate);
 
-    if (copter.optflow.healthy()) {
-        const float filter_constant = 0.95;
-        quality_filtered = filter_constant * quality_filtered + (1-filter_constant) * copter.optflow.quality();
-    } else {
-        quality_filtered = 0;
-    }
+    // Binary EKF health signal: valid horizontal velocity estimate or not
+    quality_filtered = inertial_nav.get_filter_status().flags.horiz_vel ? 255.0f : 0.0f;
 
     // Flow Hold State Machine
     switch (flowhold_state) {
@@ -321,7 +313,7 @@ void ModeFlowHold::run()
     float angle_max = copter.aparm.angle_max;
     get_pilot_desired_lean_angles(bf_angles.x, bf_angles.y, angle_max, attitude_control->get_althold_lean_angle_max_cd());
 
-    if (quality_filtered >= flow_min_quality &&
+    if (quality_filtered > 0 &&
         AP_HAL::millis() - copter.arm_time_ms > 3000) {
         // don't use for first 3s when we are just taking off
         Vector2f flow_angles;
@@ -344,176 +336,6 @@ void ModeFlowHold::run()
 
     // run the vertical position controller and set output throttle
     pos_control->update_z_controller();
-}
-
-/*
-  update height estimate using integrated accelerometer ratio with optical flow
- */
-void ModeFlowHold::update_height_estimate(void)
-{
-    float ins_height = copter.inertial_nav.get_position_z_up_cm() * 0.01;
-
-#if 1
-    // assume on ground when disarmed, or if we have only just started spooling the motors up
-    if (!hal.util->get_soft_armed() ||
-        copter.motors->get_desired_spool_state() != AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED ||
-        AP_HAL::millis() - copter.arm_time_ms < 1500) {
-        height_offset = -ins_height;
-        last_ins_height = ins_height;
-        return;
-    }
-#endif
-
-    // get delta velocity in body frame
-    Vector3f delta_vel;
-    float delta_vel_dt;
-    if (!copter.ins.get_delta_velocity(delta_vel, delta_vel_dt)) {
-        return;
-    }
-
-    // integrate delta velocity in earth frame
-    const Matrix3f &rotMat = copter.ahrs.get_rotation_body_to_ned();
-    delta_vel = rotMat * delta_vel;
-    delta_velocity_ne.x += delta_vel.x;
-    delta_velocity_ne.y += delta_vel.y;
-
-    if (!copter.optflow.healthy()) {
-        // can't update height model with no flow sensor
-        last_flow_ms = AP_HAL::millis();
-        delta_velocity_ne.zero();
-        return;
-    }
-
-    if (last_flow_ms == 0) {
-        // just starting up
-        last_flow_ms = copter.optflow.last_update();
-        delta_velocity_ne.zero();
-        height_offset = 0;
-        return;
-    }
-
-    if (copter.optflow.last_update() == last_flow_ms) {
-        // no new flow data
-        return;
-    }
-
-    // convert delta velocity back to body frame to match the flow sensor
-    Vector2f delta_vel_bf = copter.ahrs.earth_to_body2D(delta_velocity_ne);
-
-    // and convert to an rate equivalent, to be comparable to flow
-    Vector2f delta_vel_rate(-delta_vel_bf.y, delta_vel_bf.x);
-
-    // get body flow rate in radians per second
-    Vector2f flow_rate_rps = copter.optflow.flowRate() - copter.optflow.bodyRate();
-
-    uint32_t dt_ms = copter.optflow.last_update() - last_flow_ms;
-    if (dt_ms > 500) {
-        // too long between updates, ignore
-        last_flow_ms = copter.optflow.last_update();
-        delta_velocity_ne.zero();
-        last_flow_rate_rps = flow_rate_rps;
-        last_ins_height = ins_height;
-        height_offset = 0;
-        return;        
-    }
-
-    /*
-      basic equation is:
-      height_m = delta_velocity_mps / delta_flowrate_rps;
-     */
-
-    // get delta_flowrate_rps
-    Vector2f delta_flowrate = flow_rate_rps - last_flow_rate_rps;
-    last_flow_rate_rps = flow_rate_rps;
-    last_flow_ms = copter.optflow.last_update();
-
-    /*
-      update height estimate
-     */
-    const float min_velocity_change = 0.04;
-    const float min_flow_change = 0.04;
-    const float height_delta_max = 0.25;
-
-    /*
-      for each axis update the height estimate
-     */
-    float delta_height = 0;
-    uint8_t total_weight = 0;
-    float height_estimate = ins_height + height_offset;
-
-    for (uint8_t i=0; i<2; i++) {
-        // only use height estimates when we have significant delta-velocity and significant delta-flow
-        float abs_flow = fabsf(delta_flowrate[i]);
-        if (abs_flow < min_flow_change ||
-            fabsf(delta_vel_rate[i]) < min_velocity_change) {
-            continue;
-        }
-        // get instantaneous height estimate
-        float height = delta_vel_rate[i] / delta_flowrate[i];
-        if (height <= 0) {
-            // discard negative heights
-            continue;
-        }
-        delta_height += (height - height_estimate) * abs_flow;
-        total_weight += abs_flow;
-    }
-    if (total_weight > 0) {
-        delta_height /= total_weight;
-    }
-
-    if (delta_height < 0) {
-        // bias towards lower heights, as we'd rather have too low
-        // gain than have oscillation. This also compensates a bit for
-        // the discard of negative heights above
-        delta_height *= 2;
-    }
-
-    // don't update height by more than height_delta_max, this is a simple way of rejecting noise
-    float new_offset = height_offset + constrain_float(delta_height, -height_delta_max, height_delta_max);
-
-    // apply a simple filter
-    height_offset = 0.8 * height_offset + 0.2 * new_offset;
-
-    if (ins_height + height_offset < height_min) {
-        // height estimate is never allowed below the minimum
-        height_offset = height_min - ins_height;
-    }
-
-    // new height estimate for logging
-    height_estimate = ins_height + height_offset;
-
-#if HAL_LOGGING_ENABLED
-// @LoggerMessage: FHXY
-// @Description: Height estimation using optical flow sensor 
-// @Field: TimeUS: Time since system startup
-// @Field: DFx: Delta flow rate, X-Axis
-// @Field: DFy: Delta flow rate, Y-Axis
-// @Field: DVx: Integrated delta velocity rate, X-Axis
-// @Field: DVy: Integrated delta velocity rate, Y-Axis
-// @Field: Hest: Estimated Height
-// @Field: DH: Delta Height
-// @Field: Hofs: Height offset
-// @Field: InsH: Height estimate from inertial navigation library
-// @Field: LastInsH: Last used INS height in optical flow sensor height estimation calculations 
-// @Field: DTms: Time between optical flow sensor updates. This should be less than 500ms for performing the height estimation calculations
-
-    AP::logger().WriteStreaming("FHXY", "TimeUS,DFx,DFy,DVx,DVy,Hest,DH,Hofs,InsH,LastInsH,DTms", "QfffffffffI",
-                                           AP_HAL::micros64(),
-                                           (double)delta_flowrate.x,
-                                           (double)delta_flowrate.y,
-                                           (double)delta_vel_rate.x,
-                                           (double)delta_vel_rate.y,
-                                           (double)height_estimate,
-                                           (double)delta_height,
-                                           (double)height_offset,
-                                           (double)ins_height,
-                                           (double)last_ins_height,
-                                           dt_ms);
-#endif
-
-    gcs().send_named_float("HEST", height_estimate);
-    delta_velocity_ne.zero();
-    last_ins_height = ins_height;
 }
 
 #endif // MODE_FLOWHOLD_ENABLED
