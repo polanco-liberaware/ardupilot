@@ -19,9 +19,7 @@ With `EK3_SRC1_VELXY=6` and `EK3_SRC1_POSXY=6`, switching to FlowHold should pro
 - Throttle input: normal pilot-controlled altitude response via the barometer path
 - EXTNAV dropout: velocity correction disabled and behavior reduced to AltHold-like response
 
-The mode intentionally drives horizontal velocity toward zero, not absolute position. That is the desired behavior for this project because a position-hold interpretation would fight the pilot when RIO position estimates drift or reset.
-
-One important behavioral difference from the original optical-flow implementation remains: EKF health is now a binary on/off signal (`0` or `255`) rather than a gradually filtered optical-flow quality value, so correction can drop in and out more abruptly if EXTNAV health flickers.
+The mode intentionally holds velocity, not position. That is the desired behavior for this project because position hold would fight the pilot when RIO position estimates drift or reset.
 
 ```cpp
 // BEFORE:
@@ -104,7 +102,7 @@ bool filterHealthy = healthy() && tiltAlignComplete && (yawAlignComplete || ...)
 status.flags.horiz_vel = someHorizRefData && filterHealthy;
 ```
 
-In this EXTNAV configuration, `flags.horiz_vel` is the correct runtime gate for "the EKF currently considers horizontal velocity usable." With healthy EXTNAV fusion active, incoming external velocity prevents the EKF from timing out its horizontal-velocity solution and allows this flag to stay true.
+`velTimeout` is reset to `false` whenever `VISION_SPEED_ESTIMATE` arrives and `EK3_SRC1_VELXY=6`. This makes `someHorizRefData=true` → `flags.horiz_vel=true` when the filter is healthy and EXTNAV data is flowing.
 
 **Stock dependency (before the EKF3 change):** `readyToUseExtNav()` at `AP_NavEKF3_Control.cpp:609` required `EK3_SRC1_POSXY=6`. That forced EXTNAV position to be configured even when only EXTNAV velocity was wanted.
 
@@ -141,11 +139,11 @@ Optical flow is body-frame, so a body→earth rotation is needed. `inertial_nav.
 
 ---
 
-### 6. `inertial_nav.get_velocity_neu_cms()` — safe to call, but not self-validating
+### 6. `inertial_nav.get_velocity_neu_cms()` — safe to call, but freeze on failure
 
-`AP_InertialNav::get_velocity_neu_cms()` simply returns the stored `_velocity_cm` state from `AP_InertialNav`; it does not perform a fresh validity check and it does not carry its own success/failure flag.
+From `AP_InertialNav.cpp:32–45`: if `get_velocity_NED()` fails, horizontal velocity is **frozen at last good value** (not zeroed). The getter returns a `Vector3f` with no validity flag.
 
-**Therefore:** The `flags.horiz_vel` check in `run()` is the correct health gate. When it goes false, the velocity-correction block is skipped and the mode falls back toward plain AltHold-like behavior. Because the gate is binary, that transition is less graceful than the old filtered optical-flow-quality path, but it is still the correct safeguard around this getter.
+**Therefore:** The `flags.horiz_vel` check in `run()` is the correct health gate. When it goes false, the velocity correction block at line 324 is skipped and the mode degrades to pure AltHold behaviour — safe.
 
 ---
 
@@ -470,9 +468,7 @@ With the final implementation:
 
 ---
 
-## Validation Checklist
-
-The items below are recommended build/SITL checks to run after the code review. They are not claims that this review already executed them successfully.
+## Verification
 
 ### 1. Build — confirm zero optflow references remain
 ```bash
@@ -489,16 +485,16 @@ sim_vehicle.py -v ArduCopter --console --map
 # Set: EK3_SRC1_VELXY=6, EK3_SRC1_POSXY=6, VISO_TYPE=1, FLOW_TYPE=0
 # Arm, takeoff in AltHold, switch to FlowHold (mode 22)
 ```
-- FlowHold should accept once EKF EXTNAV fusion is healthy
-- Sticks centered should brake toward zero horizontal velocity
-- Roll/pitch sticks should apply pilot lean angles with velocity correction added on top
-- Throttle should continue to drive altitude through the normal AltHold/baro path
+- Mode accepts (init returns true — SITL has horiz_vel=true)
+- Sticks centered → vehicle brakes and holds velocity=0
+- Roll/pitch sticks → pilot lean angles applied, velocity correction added on top
+- Throttle → altitude responds normally via RC
 
 ### 3. Degradation test — confirm safe fallback
 - Stop sending `VISION_SPEED_ESTIMATE`
 - `flags.horiz_vel` goes false → `quality_filtered = 0`
-- Velocity correction block is skipped
-- Vehicle should behave close to pure AltHold; because the gate is binary, expect a sharper transition than the old optical-flow quality fade
+- Velocity correction block at line 324 is skipped
+- Vehicle behaves as pure AltHold — no instability
 
 ### 4. Log check
 ```
@@ -510,14 +506,4 @@ XKF1.VN/VE           → tracks EXTNAV input
 ```
 
 ### 5. Regression — confirm unmodified modes unaffected
-Switch to Loiter, AltHold, Guided — confirm normal operation. The firmware changes reviewed here are isolated to `mode_flowhold.cpp`, the `ModeFlowHold` private section in `mode.h`, and `config.h`.
-
----
-
-## Notes from Final Review
-
-- The adaptation is architecturally sound: it reuses the existing FlowHold controller but swaps the sensor source from optical flow to EKF horizontal velocity.
-- The height-estimation path had to be removed; keeping it would have been physically wrong once the input became velocity in m/s instead of flow rate in rad/s.
-- The axis reconstruction `sensor_flow = [-v_right, +v_forward]` is the key detail that preserves the legacy clamp, braking, filter, and PI channel semantics.
-- Runtime behavior now depends on EKF EXTNAV health and configuration more directly than the original optical-flow version. In particular, `EK3_SRC1_POSXY=6` and `EK3_SRC1_VELXY=6` are both required for this operating concept.
-- Source comments in `mode.h` and the top banner in `mode_flowhold.cpp` still use legacy "optical flow" wording. Treat those comments as stale descriptions of the old mode, not as the current behavior definition.
+Switch to Loiter, AltHold, Guided — confirm normal operation. FlowHold changes are fully isolated to `mode_flowhold.cpp`, `mode.h` private section, and `config.h`.

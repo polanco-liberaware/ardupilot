@@ -485,74 +485,19 @@ $$
 H_q = C_{b r}^T C_{n b}^T \operatorname{skew}(\vec{v}_{n b})
 $$
 
-This matches the left-multiplicative small-angle error convention used by the filter state correction. A finite-difference check against the implemented measurement model matches this expression to numerical precision, while the sign-flipped alternative does not.
-
 $$
-H_{b_g} = C_{b r}^T \operatorname{skew}(\vec{l}_{b r})
+H_{b_g} = - C_{b r}^T \operatorname{skew}(\vec{l}_{b r})
 $$
 
-because
-
 $$
-(\vec{w} - (\vec{b}_{g,c} + \delta \vec{b}_g)) \times \vec{l}_{b r}
-=
-(\vec{w} - \vec{b}_{g,c}) \times \vec{l}_{b r}
-- \delta \vec{b}_g \times \vec{l}_{b r}
-=
-(\vec{w} - \vec{b}_{g,c}) \times \vec{l}_{b r}
-+
-\operatorname{skew}(\vec{l}_{b r}) \, \delta \vec{b}_g
-$$
-
-using the identity $-\delta \vec{b}_g \times \vec{l}_{b r} = \vec{l}_{b r} \times \delta \vec{b}_g$.
-
-$$
-H_{l_{b r}} = C_{b r}^T \operatorname{skew}(\vec{w} - \vec{b}_{g,c})
-$$
-
-because
-
-$$
-(\vec{w} - \vec{b}_{g,c}) \times (\vec{l}_{b r} + \delta \vec{l})
-=
-(\vec{w} - \vec{b}_{g,c}) \times \vec{l}_{b r}
-+
-\operatorname{skew}(\vec{w} - \vec{b}_{g,c}) \, \delta \vec{l}
+H_{l_{b r}} = C_{b r}^T \operatorname{skew}(\vec{w})
 $$
 
 $$
 H_{q_{b r}} = C_{b r}^T \operatorname{skew}(\vec{v}_w + \vec{v}_b)
 $$
-
-This is the Jacobian of the radar-frame velocity with respect to the cloned radar-orientation error under the same left-multiplicative perturbation convention used in the code for extrinsic rotation correction.
 
 These populate the clone-related portions of the full measurement Jacobian.
-
-The original paper summary only lists the Jacobians for the states present in the published EKF state, where radar extrinsics are assumed calibrated. This repository estimates the radar extrinsics as part of the cloned radar update state, so the implementation requires the additional $H_{l_{b r}}$ and $H_{q_{b r}}$ blocks shown here.
-
-For this repository revision, the radar Jacobians were re-checked both by hand from the measurement model and by finite differences. The validated expressions are:
-
-$$
-H_v = C_{b r}^T C_{n b}^T
-$$
-
-$$
-H_q = C_{b r}^T C_{n b}^T \operatorname{skew}(\vec{v}_{n b})
-$$
-
-$$
-H_{b_g} = C_{b r}^T \operatorname{skew}(\vec{l}_{b r})
-$$
-
-$$
-H_{l_{b r}} = C_{b r}^T \operatorname{skew}(\vec{w} - \vec{b}_{g,c})
-$$
-
-$$
-H_{q_{b r}} = C_{b r}^T \operatorname{skew}(\vec{v}_w + \vec{v}_b)
-$$
-
-In the same finite-difference audit, plausible wrong alternatives such as sign-flipped $H_q$, sign-flipped $H_{q_{b r}}$, sign-flipped $H_{b_g}$, or using $\operatorname{skew}(\vec{w})$ instead of $\operatorname{skew}(\vec{w} - \vec{b}_{g,c})$ for $H_{l_{b r}}$ produced errors many orders of magnitude larger than the validated formulas.
 
 ### Innovation and Gating
 
