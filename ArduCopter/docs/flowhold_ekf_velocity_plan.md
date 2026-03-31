@@ -106,7 +106,14 @@ status.flags.horiz_vel = someHorizRefData && filterHealthy;
 
 In this EXTNAV configuration, `flags.horiz_vel` is the correct runtime gate for "the EKF currently considers horizontal velocity usable." With healthy EXTNAV fusion active, incoming external velocity prevents the EKF from timing out its horizontal-velocity solution and allows this flag to stay true.
 
-**Critical dependency confirmed:** `readyToUseExtNav()` at `AP_NavEKF3_Control.cpp:609` requires `EK3_SRC1_POSXY=6`. Without position source set to EXTNAV, the EKF never enters `AID_ABSOLUTE` mode and `flags.horiz_vel` may stay false even with velocity data arriving. **Both `EK3_SRC1_VELXY=6` and `EK3_SRC1_POSXY=6` are required.**
+**Stock dependency (before the EKF3 change):** `readyToUseExtNav()` at `AP_NavEKF3_Control.cpp:609` required `EK3_SRC1_POSXY=6`. That forced EXTNAV position to be configured even when only EXTNAV velocity was wanted.
+
+**Current project change:** EKF3 EXTNAV readiness is split into:
+
+1. `readyToUseExtNavPos()`
+2. `readyToUseExtNavVel()`
+
+This allows the filter to enter the aided state using healthy EXTNAV horizontal velocity without forcing EXTNAV horizontal position into the filter. For the FlowHold operating concept, that removes the old hard dependency on `EK3_SRC1_POSXY=6`.
 
 ---
 
@@ -347,7 +354,7 @@ Delete the full 166-line function body including the `FHXY` log message it conta
 ```
 EK3_SRC1_VELXY = 6        # EXTNAV velocity source (required)
 EK3_SRC1_VELZ  = 0        # Do not use EXTNAV for Z velocity — baro handles altitude
-EK3_SRC1_POSXY = 6        # EXTNAV position (required by readyToUseExtNav())
+EK3_SRC1_POSXY = 0 or 3   # EXTNAV horizontal position no longer required for the velocity-only operating concept
 EK3_SRC1_POSZ  = 1        # Barometer for altitude (Z is not from RIO in this phase)
 VISO_TYPE      = 1        # Enable MAVLink vision odometry bridge
 VISO_DELAY_MS  = <measured empirically>
@@ -355,7 +362,23 @@ FLOW_TYPE      = 0        # Disable optical flow sensor (not used)
 FHLD_FLOW_MAX  = 2.0      # If upgrading from optical-flow FlowHold, set explicitly in Mission Planner/QGC
 ```
 
-Both `POSXY=6` and `VELXY=6` are mandatory. Without `POSXY=6`, `readyToUseExtNav()` returns false → EKF never enters `AID_ABSOLUTE` → `flags.horiz_vel` stays false → FlowHold init fails at runtime.
+With the EKF3 EXTNAV readiness split, `VELXY=6` is the key requirement for the FlowHold-style velocity-only concept. `POSXY` no longer needs to be `6` just to satisfy EXTNAV readiness.
+
+Important caveat: this change is intentionally narrow. It enables EKF3 to become ready using healthy EXTNAV horizontal velocity without forcing low-quality EXTNAV position into the filter. It does **not** automatically make all Copter GPS/position-requiring modes usable with velocity-only EXTNAV.
+
+### Pre-arm implications
+
+This change does **not** broadly relax Copter arming checks for GPS/position-requiring modes.
+
+- `AP_Arming_Copter::mandatory_gps_checks()` still passes `mode_requires_gps` into `ahrs.pre_arm_check(...)`
+- `AP_NavEKF_Source::pre_arm_check()` still validates horizontal position configuration when `requires_position` is true
+- `Need Position Estimate` checks for GPS/position-requiring modes are unchanged
+
+So the intended effect is:
+
+1. velocity-only EXTNAV can support the FlowHold-style runtime gate
+2. low-quality EXTNAV position no longer needs to be fused just to satisfy EXTNAV readiness
+3. GPS/position-requiring Copter modes still keep their normal arming semantics unless explicitly redesigned later
 
 ## Implementation Results
 

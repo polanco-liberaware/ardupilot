@@ -189,6 +189,23 @@ Set these via Mission Planner / QGroundControl Full Parameter List, or via `MAV_
 
 > **Conservative first test:** Change only `EK3_SRC1_VELXY=6`. Keep everything else at GPS/baro defaults. This means GPS still drives position; only the velocity feedback uses RIO. The risk of EKF instability is minimized.
 
+#### Why we want velocity-only EXTNAV support
+
+In this project, the RIO velocity estimate is currently more trustworthy than the RIO position estimate. EKF3 can ingest external position and velocity on separate paths, but once low-quality external position is fused it can still contaminate the EKF state through the shared covariance update.
+
+The preferred architecture is therefore:
+
+1. use EXTNAV horizontal velocity where it adds real value
+2. avoid forcing EXTNAV horizontal position into EKF3 only to satisfy readiness gating
+3. keep the ArduPilot change minimal by adjusting EKF3 readiness logic instead of reworking Copter mode logic
+
+This is why the minimal patch direction is to split EKF3 EXTNAV readiness into:
+
+1. external-position readiness
+2. external-velocity readiness
+
+so velocity-only EXTNAV operation can be supported more safely.
+
 #### 2.3 Enable detailed logging (strongly recommended)
 
 | Parameter | Value | Notes |

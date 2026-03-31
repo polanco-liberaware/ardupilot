@@ -287,7 +287,7 @@ void NavEKF3_core::setAidingMode()
             // and IMU gyro bias estimates have stabilised
             // If GPS usage has been prohiited then we use flow aiding provided optical flow data is present
             // GPS aiding is the preferred option unless excluded by the user
-            if (readyToUseGPS() || readyToUseRangeBeacon() || readyToUseExtNav()) {
+            if (readyToUseGPS() || readyToUseRangeBeacon() || readyToUseExtNavPos() || readyToUseExtNavVel()) {
                 PV_AidingMode = AID_ABSOLUTE;
             } else if (
 #if EK3_FEATURE_OPTFLOW_FUSION
@@ -305,7 +305,7 @@ void NavEKF3_core::setAidingMode()
             bool bodyOdmFusionTimeout = ((imuSampleTime_ms - prevBodyVelFuseTime_ms) > 5000);
             // Enable switch to absolute position mode if GPS or range beacon data is available
             // If GPS or range beacons data is not available and flow fusion has timed out, then fall-back to no-aiding
-            if (readyToUseGPS() || readyToUseRangeBeacon() || readyToUseExtNav()) {
+            if (readyToUseGPS() || readyToUseRangeBeacon() || readyToUseExtNavPos() || readyToUseExtNavVel()) {
                 PV_AidingMode = AID_ABSOLUTE;
             } else if (flowFusionTimeout && bodyOdmFusionTimeout) {
                 PV_AidingMode = AID_NONE;
@@ -467,7 +467,7 @@ void NavEKF3_core::setAidingMode()
                 GCS_SEND_TEXT(MAV_SEVERITY_INFO, "EKF3 IMU%u initial beacon pos D offset = %3.1f (m)",(unsigned)imu_index,(double)rngBcn.posOffsetNED.z);
 #endif  // EK3_FEATURE_BEACON_FUSION
 #if EK3_FEATURE_EXTERNAL_NAV
-            } else if (readyToUseExtNav()) {
+            } else if (readyToUseExtNavPos()) {
                 // we are commencing aiding using external nav
                 posResetSource = resetDataSource::EXTNAV;
                 GCS_SEND_TEXT(MAV_SEVERITY_INFO, "EKF3 IMU%u is using external nav data",(unsigned)imu_index);
@@ -605,8 +605,8 @@ bool NavEKF3_core::readyToUseRangeBeacon(void) const
 #endif  // EK3_FEATURE_BEACON_FUSION
 }
 
-// return true if the filter is ready to use external nav data
-bool NavEKF3_core::readyToUseExtNav(void) const
+// return true if the filter is ready to use external nav position data
+bool NavEKF3_core::readyToUseExtNavPos(void) const
 {
 #if EK3_FEATURE_EXTERNAL_NAV
     if (frontend->sources.getPosXYSource() != AP_NavEKF_Source::SourceXY::EXTNAV) {
@@ -614,6 +614,20 @@ bool NavEKF3_core::readyToUseExtNav(void) const
     }
 
     return tiltAlignComplete && extNavDataToFuse;
+#else
+    return false;
+#endif // EK3_FEATURE_EXTERNAL_NAV
+}
+
+// return true if the filter is ready to use external nav velocity data
+bool NavEKF3_core::readyToUseExtNavVel(void) const
+{
+#if EK3_FEATURE_EXTERNAL_NAV
+    if (!frontend->sources.useVelXYSource(AP_NavEKF_Source::SourceXY::EXTNAV)) {
+        return false;
+    }
+
+    return tiltAlignComplete && extNavVelToFuse;
 #else
     return false;
 #endif // EK3_FEATURE_EXTERNAL_NAV
