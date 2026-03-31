@@ -883,8 +883,7 @@ private:
     bool readyToUseBodyOdm(void) const;
 
     // return true if the filter to be ready to use external nav data
-    bool readyToUseExtNavPos(void) const;
-    bool readyToUseExtNavVel(void) const;
+    bool readyToUseExtNav(void) const;
 
     // return true if we should use the range finder sensor
     bool useRngFinder(void) const;
