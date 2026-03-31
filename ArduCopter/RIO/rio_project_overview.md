@@ -201,9 +201,22 @@ So the bridge does:
 For position, the same principle applies: the bridge converts the RIO pose into the convention ArduPilot expects for `VISION_POSITION_ESTIMATE`.
 
 
-## Why We Send Both Position and Velocity
+## Why the old project path sent both position and velocity
 
-Bench testing showed that sending only velocity was not sufficient for stable no-GPS Copter operation. The reliable configuration is to send both `VISION_POSITION_ESTIMATE` and `VISION_SPEED_ESTIMATE` as a consistent pair. This ensures EKF3 enters and maintains the correct external-navigation fusion mode. Velocity is the key quantity for short-term hover, but position is needed for EKF3 to accept and use the external navigation source.
+Bench testing showed that, on the old earth-frame path, sending only velocity was not sufficient for stable no-GPS Copter operation. The reliable configuration there was to send both `VISION_POSITION_ESTIMATE` and `VISION_SPEED_ESTIMATE` as a consistent pair.
+
+This should now be understood as a limitation of that specific path, not as proof that the stock body-frame odometry path is impossible.
+
+## Architecture correction
+
+The project has since identified an important correction:
+
+1. stock ArduPilot body-frame odometry is not ingested through `ODOMETRY`
+2. in this tree, `ODOMETRY` is converted into the regular ext-nav pose + NED-velocity path
+3. the true stock body-frame EKF3 ingress is `VISION_POSITION_DELTA`
+4. that message requires body-frame delta-position and delta-angle semantics, not just a velocity vector
+
+So the next research and implementation direction should focus on whether the RIO companion stack can publish a correct `VISION_POSITION_DELTA` stream, rather than continuing to optimize the earth-frame `VISION_SPEED_ESTIMATE` path as if it were body-native.
 
 ## Current Flight-Control Concept
 

@@ -1,5 +1,14 @@
 # FlowHold EKF Velocity Adaptation: Plan and Results
 
+> **Status update / correction**
+>
+> This document records the FlowHold adaptation work that was built around the earth-frame EXTNAV velocity path. That work remains valuable as a record of the investigation, but the architecture conclusion has changed:
+>
+> 1. the stock ArduPilot body-frame odometry path is `VISION_POSITION_DELTA`, not `ODOMETRY`
+> 2. stock `ODOMETRY` handling in this tree still converts body-frame velocity to NED and feeds the regular ext-nav path
+> 3. therefore the previous “velocity-only EXTNAV” direction is no longer the preferred long-term architecture
+> 4. the project should pivot toward evaluating whether RIO can produce the correct delta-position / delta-angle semantics for the stock body-odom path
+
 ## Goal
 
 ### 1. Overall project goal
@@ -92,7 +101,7 @@ After changes: **zero** `copter.optflow` references remain.
 
 ---
 
-### 3. EKF health gate — `flags.horiz_vel` is correct and sufficient
+### 3. EKF health gate — `flags.horiz_vel` remains the right runtime gate
 
 From `AP_NavEKF3_Control.cpp:768–777`:
 ```cpp
@@ -102,16 +111,9 @@ bool filterHealthy = healthy() && tiltAlignComplete && (yawAlignComplete || ...)
 status.flags.horiz_vel = someHorizRefData && filterHealthy;
 ```
 
-`velTimeout` is reset to `false` whenever `VISION_SPEED_ESTIMATE` arrives and `EK3_SRC1_VELXY=6`. This makes `someHorizRefData=true` → `flags.horiz_vel=true` when the filter is healthy and EXTNAV data is flowing.
+For the earth-frame EXTNAV path, `velTimeout` is reset to `false` whenever `VISION_SPEED_ESTIMATE` arrives and `EK3_SRC1_VELXY=6`. This makes `someHorizRefData=true` → `flags.horiz_vel=true` when the filter is healthy and EXTNAV data is flowing.
 
-**Stock dependency (before the EKF3 change):** `readyToUseExtNav()` at `AP_NavEKF3_Control.cpp:609` required `EK3_SRC1_POSXY=6`. That forced EXTNAV position to be configured even when only EXTNAV velocity was wanted.
-
-**Current project change:** EKF3 EXTNAV readiness is split into:
-
-1. `readyToUseExtNavPos()`
-2. `readyToUseExtNavVel()`
-
-This allows the filter to enter the aided state using healthy EXTNAV horizontal velocity without forcing EXTNAV horizontal position into the filter. For the FlowHold operating concept, that removes the old hard dependency on `EK3_SRC1_POSXY=6`.
+**Important correction:** this document previously treated the velocity-only EXTNAV patch line as the preferred solution. That is no longer the recommended direction. The body-frame path should be evaluated first before making more EKF3 readiness changes.
 
 ---
 
@@ -352,7 +354,7 @@ Delete the full 166-line function body including the `FHXY` log message it conta
 ```
 EK3_SRC1_VELXY = 6        # EXTNAV velocity source (required)
 EK3_SRC1_VELZ  = 0        # Do not use EXTNAV for Z velocity — baro handles altitude
-EK3_SRC1_POSXY = 0 or 3   # EXTNAV horizontal position no longer required for the velocity-only operating concept
+EK3_SRC1_POSXY = 3        # Keep GPS position in the historical earth-frame EXTNAV path
 EK3_SRC1_POSZ  = 1        # Barometer for altitude (Z is not from RIO in this phase)
 VISO_TYPE      = 1        # Enable MAVLink vision odometry bridge
 VISO_DELAY_MS  = <measured empirically>
@@ -360,23 +362,11 @@ FLOW_TYPE      = 0        # Disable optical flow sensor (not used)
 FHLD_FLOW_MAX  = 2.0      # If upgrading from optical-flow FlowHold, set explicitly in Mission Planner/QGC
 ```
 
-With the EKF3 EXTNAV readiness split, `VELXY=6` is the key requirement for the FlowHold-style velocity-only concept. `POSXY` no longer needs to be `6` just to satisfy EXTNAV readiness.
+At this stage, the safer project decision is to **not** continue relying on the velocity-only EXTNAV patch line. Instead:
 
-Important caveat: this change is intentionally narrow. It enables EKF3 to become ready using healthy EXTNAV horizontal velocity without forcing low-quality EXTNAV position into the filter. It does **not** automatically make all Copter GPS/position-requiring modes usable with velocity-only EXTNAV.
-
-### Pre-arm implications
-
-This change does **not** broadly relax Copter arming checks for GPS/position-requiring modes.
-
-- `AP_Arming_Copter::mandatory_gps_checks()` still passes `mode_requires_gps` into `ahrs.pre_arm_check(...)`
-- `AP_NavEKF_Source::pre_arm_check()` still validates horizontal position configuration when `requires_position` is true
-- `Need Position Estimate` checks for GPS/position-requiring modes are unchanged
-
-So the intended effect is:
-
-1. velocity-only EXTNAV can support the FlowHold-style runtime gate
-2. low-quality EXTNAV position no longer needs to be fused just to satisfy EXTNAV readiness
-3. GPS/position-requiring Copter modes still keep their normal arming semantics unless explicitly redesigned later
+1. rollback the velocity-only experiment commit (`4e973531d2`) in `ardupilot/`
+2. reassess FlowHold against the stock body-odometry ingress path
+3. only return to EKF3 firmware modifications if the stock body path proves insufficient
 
 ## Implementation Results
 
@@ -393,7 +383,9 @@ The active companion path is:
 5. ArduPilot EKF3 fuses that external velocity as NED velocity. See `ArduCopter/docs/EKF3_DATA_FLOW.md` and `ArduCopter/docs/EKF3_CORE_MATH.md`.
 6. `AP_InertialNav::get_velocity_neu_cms()` exposes the fused horizontal velocity to Copter as earth-frame NEU cm/s.
 
-So the velocity that reaches `ModeFlowHold::flowhold_flow_to_angle()` is already a world or earth-frame horizontal velocity estimate, not a body-frame one.
+So the velocity that reaches `ModeFlowHold::flowhold_flow_to_angle()` in this path is already a world or earth-frame horizontal velocity estimate, not a true body-frame one.
+
+This is the exact architectural reason the project is now pivoting away from that path.
 
 ### What The Adapted Optical-Flow Path Actually Does
 

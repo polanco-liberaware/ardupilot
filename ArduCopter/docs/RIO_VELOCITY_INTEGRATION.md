@@ -1,4 +1,17 @@
-# mmWave RIO Body-Velocity Integration into ArduCopter Velocity Control Loop
+# mmWave RIO Velocity Integration into ArduCopter Velocity Control Loop
+
+> **Status update / correction**
+>
+> This document reflects an older earth-frame `VISION_SPEED_ESTIMATE` direction that was useful for initial exploration, but it is **not** the best architectural match for the long-term project goal of keeping RIO motion in the body frame.
+>
+> The most important corrected findings are:
+>
+> 1. stock ArduPilot's true body-frame odometry ingress is **`VISION_POSITION_DELTA`**, not `ODOMETRY`
+> 2. stock `ODOMETRY` handling in this tree converts body-frame velocity to NED and forwards it into the regular ext-nav pose/velocity path
+> 3. therefore simply switching from `VISION_SPEED_ESTIMATE` to `ODOMETRY` would **not** achieve true stock body-frame fusion
+> 4. the stock body-frame EKF3 path requires **delta position + delta angle + delta time** semantics, not just a velocity vector
+>
+> So, at present, **body velocity alone is not enough** to use the stock body-odom path without additional companion-side work to produce a proper `VISION_POSITION_DELTA` message.
 
 ## Document Purpose
 
@@ -45,7 +58,7 @@ All configuration must be achieved through:
 1. MAVLink messages sent by the Companion Computer.
 2. ArduCopter parameter changes via GCS (Mission Planner / QGroundControl) or MAVLink `SET_PARAM`.
 
-No recompilation of ArduCopter firmware is needed. The required pipeline already exists in stock ArduCopter builds.
+No recompilation of ArduCopter firmware is needed for the earth-frame `VISION_SPEED_ESTIMATE` path. However, for the **true stock body-frame path**, the required MAVLink interface is different than originally assumed.
 
 ---
 
@@ -100,6 +113,16 @@ The only requirement is activating the pipeline via parameters and sending the c
 | `libraries/AC_AttitudeControl/AC_PosControl.cpp` | Velocity PID reads from `_inav.get_velocity_xy_cms()` |
 
 ---
+
+## Historical implementation direction
+
+The rest of this document describes the earlier `VISION_SPEED_ESTIMATE` integration approach and remains useful as a record of what was tried and why it behaved the way it did.
+
+The current project direction should instead be read as:
+
+1. treat this document as historical background for the earth-frame path
+2. do **not** assume it describes the final desired architecture
+3. use `VISION_POSITION_DELTA` / body-odometry analysis as the new reference point for stock body-frame fusion
 
 ## Implementation Plan
 
@@ -158,7 +181,7 @@ msg = connection.mav.vision_speed_estimate_encode(
 connection.mav.send(msg)
 ```
 
-> **Do NOT use `VISION_POSITION_DELTA`** — that message takes the body-odometry path (`writeBodyFrameOdom` → `FuseBodyVel()`), which is a different EKF fusion path with different behavior and requirements.
+> **Important correction:** `VISION_POSITION_DELTA` is now understood to be the **actual stock body-odometry path** (`writeBodyFrameOdom()` → `FuseBodyVel()`). The reason it was not chosen originally is that it requires delta-position and delta-angle semantics, not just a velocity vector.
 
 ---
 
@@ -189,22 +212,18 @@ Set these via Mission Planner / QGroundControl Full Parameter List, or via `MAV_
 
 > **Conservative first test:** Change only `EK3_SRC1_VELXY=6`. Keep everything else at GPS/baro defaults. This means GPS still drives position; only the velocity feedback uses RIO. The risk of EKF instability is minimized.
 
-#### Why we want velocity-only EXTNAV support
+#### Why the velocity-only EXTNAV patch line is no longer the preferred direction
 
-In this project, the RIO velocity estimate is currently more trustworthy than the RIO position estimate. EKF3 can ingest external position and velocity on separate paths, but once low-quality external position is fused it can still contaminate the EKF state through the shared covariance update.
+In this project, the RIO velocity estimate is currently more trustworthy than the RIO position estimate. That originally motivated a velocity-only EXTNAV patch line. However, that line still relied on earth-frame velocity semantics and therefore kept an undesirable dependence on yaw correctness.
 
-The preferred architecture is therefore:
+The corrected preferred architecture is therefore:
 
-1. use EXTNAV horizontal velocity where it adds real value
-2. avoid forcing EXTNAV horizontal position into EKF3 only to satisfy readiness gating
-3. keep the ArduPilot change minimal by adjusting EKF3 readiness logic instead of reworking Copter mode logic
+1. use a **true body-frame odometry** path if possible
+2. avoid forcing low-quality external position into EKF3
+3. avoid unnecessary earth-frame rotation of body velocity on the companion computer
+4. minimize further ArduPilot firmware changes until the stock body-odom path is fully evaluated
 
-This is why the minimal patch direction is to split EKF3 EXTNAV readiness into:
-
-1. external-position readiness
-2. external-velocity readiness
-
-so velocity-only EXTNAV operation can be supported more safely.
+This means the previous EXTNAV velocity-only patch line should now be treated as an exploration result, not the final architecture recommendation.
 
 #### 2.3 Enable detailed logging (strongly recommended)
 
