@@ -140,6 +140,46 @@ void NavEKF3_core::writeBodyFrameOdom(float quality, const Vector3f &delPos, con
 #endif // EK3_FEATURE_BODY_ODOM
 }
 
+/*
+  write body frame velocity measurement directly (e.g. from radar).
+  vel is in body FRD frame (m/s).
+  velErr is 1-sigma velocity error (m/s).
+  angRate is body angular rate from the odometry sensor (rad/s).
+  posOffset is sensor position in body frame (m).
+  timeStamp_ms is sensor timestamp.
+  delay_ms is sensor pipeline latency.
+*/
+void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
+                                     const Vector3f &angRate, uint32_t timeStamp_ms,
+                                     uint16_t delay_ms, const Vector3f &posOffset)
+{
+#if EK3_FEATURE_BODY_ODOM
+    // reject NaN inputs
+    if (vel.is_nan() || isnan(velErr) || angRate.is_nan() || posOffset.is_nan()) {
+        return;
+    }
+
+    // rate limiting — share the same gate as writeBodyFrameOdom
+    if (((timeStamp_ms - bodyOdmMeasTime_ms) < frontend->sensorIntervalMin_ms) ||
+        !statesInitialised) {
+        return;
+    }
+
+    // subtract sensor pipeline latency
+    timeStamp_ms -= delay_ms;
+
+    bodyOdmDataNew.body_offset = posOffset.toftype();
+    bodyOdmDataNew.vel         = vel.toftype();
+    bodyOdmDataNew.angRate     = angRate.toftype();
+    bodyOdmDataNew.velErr      = velErr;
+    bodyOdmDataNew.time_ms     = timeStamp_ms;
+
+    bodyOdmMeasTime_ms = timeStamp_ms;
+
+    storedBodyOdm.push(bodyOdmDataNew);
+#endif
+}
+
 void NavEKF3_core::writeWheelOdom(float delAng, float delTime, uint32_t timeStamp_ms, const Vector3f &posOffset, float radius)
 {
 #if EK3_FEATURE_BODY_ODOM
