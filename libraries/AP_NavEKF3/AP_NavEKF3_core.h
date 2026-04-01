@@ -293,6 +293,15 @@ public:
      * posOffset is the XYZ body frame position of the camera focal point (m)
     */
     void writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, uint16_t delay_ms, const Vector3f &posOffset);
+    /*
+     * Write body-frame velocity directly from a radar or similar sensor (no delta-position conversion).
+     * vel is the XYZ velocity of the sensor in body FRD frame (m/s)
+     * velErr is the 1-sigma velocity measurement error (m/s)
+     * angRate is the XYZ body angular rate from the sensor (rad/s)
+     * timeStamp_ms is the timestamp of the measurement (msec)
+     * delay_ms is the average sensor pipeline latency relative to inertial measurements
+     * posOffset is the XYZ body frame position of the sensor (m)
+    */
     void writeBodyFrameVel(const Vector3f &vel, float velErr,
                            const Vector3f &angRate, uint32_t timeStamp_ms,
                            uint16_t delay_ms, const Vector3f &posOffset);

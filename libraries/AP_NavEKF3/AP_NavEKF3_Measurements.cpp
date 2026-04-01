@@ -177,7 +177,7 @@ void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
     bodyOdmMeasTime_ms = timeStamp_ms;
 
     storedBodyOdm.push(bodyOdmDataNew);
-#endif
+#endif // EK3_FEATURE_BODY_ODOM
 }
 
 void NavEKF3_core::writeWheelOdom(float delAng, float delTime, uint32_t timeStamp_ms, const Vector3f &posOffset, float radius)
