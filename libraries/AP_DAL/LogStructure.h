@@ -38,7 +38,8 @@
     LOG_RSLL_MSG, \
     LOG_REVH_MSG, \
     LOG_RWOH_MSG, \
-    LOG_RBOH_MSG
+    LOG_RBOH_MSG, \
+    LOG_RBVH_MSG
 
 // @LoggerMessage: RFRH
 // @Description: Replay FRame Header
@@ -384,6 +385,18 @@ struct log_RBOH {
     uint8_t _end;
 };
 
+// @LoggerMessage: RBVH
+// @Description: Replay body frame velocity data
+struct log_RBVH {
+    Vector3f vel;
+    float velErr;
+    Vector3f angRate;
+    Vector3f posOffset;
+    uint32_t timeStamp_ms;
+    uint16_t delay_ms;
+    uint8_t _end;
+};
+
 #define RLOG_SIZE(sname) 3+offsetof(struct log_ ##sname,_end)
 
 #define LOG_STRUCTURE_FROM_DAL        \
@@ -450,4 +463,6 @@ struct log_RBOH {
     { LOG_RWOH_MSG, RLOG_SIZE(RWOH),                                   \
       "RWOH", "ffIffff", "DA,DT,TS,PX,PY,PZ,R", "-------", "-------" }, \
     { LOG_RBOH_MSG, RLOG_SIZE(RBOH),                                   \
-      "RBOH", "ffffffffIfffH", "Q,DPX,DPY,DPZ,DAX,DAY,DAZ,DT,TS,OX,OY,OZ,D", "-------------", "-------------" },
+      "RBOH", "ffffffffIfffH", "Q,DPX,DPY,DPZ,DAX,DAY,DAZ,DT,TS,OX,OY,OZ,D", "-------------", "-------------" }, \
+    { LOG_RBVH_MSG, RLOG_SIZE(RBVH),                                   \
+      "RBVH", "ffffffffffIH", "VX,VY,VZ,VErr,WX,WY,WZ,OX,OY,OZ,TS,D", "------------", "------------" },
