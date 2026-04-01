@@ -222,6 +222,9 @@ public:
     // log wheel odometry data
     void writeWheelOdom(float delAng, float delTime, uint32_t timeStamp_ms, const Vector3f &posOffset, float radius);
     void writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, uint16_t delay_ms, const Vector3f &posOffset);
+    void writeBodyFrameVel(const Vector3f &vel, float velErr,
+                           const Vector3f &angRate, uint32_t timeStamp_ms,
+                           uint16_t delay_ms, const Vector3f &posOffset);
 
     // Replay support:
     void handle_message(const log_RFRH &msg) {
@@ -327,6 +330,7 @@ public:
     void handle_message(const log_REVH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
     void handle_message(const log_RWOH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
     void handle_message(const log_RBOH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
+    void handle_message(const log_RBVH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
     void handle_message(const log_RSLL &msg, NavEKF2 &ekf2, NavEKF3 &ekf3);
 
     // map core number for replay
@@ -353,6 +357,7 @@ private:
     struct log_REVH _REVH;
     struct log_RWOH _RWOH;
     struct log_RBOH _RBOH;
+    struct log_RBVH _RBVH;
     struct log_RSLL _RSLL;
 
     // cached variables for speed:

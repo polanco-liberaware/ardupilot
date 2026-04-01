@@ -422,6 +422,22 @@ void AP_DAL::writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vec
     WRITE_REPLAY_BLOCK_IFCHANGED(RBOH, _RBOH, old);
 }
 
+void AP_DAL::writeBodyFrameVel(const Vector3f &vel, float velErr,
+                               const Vector3f &angRate, uint32_t timeStamp_ms,
+                               uint16_t delay_ms, const Vector3f &posOffset)
+{
+    end_frame();
+
+    const log_RBVH old = _RBVH;
+    _RBVH.vel = vel;
+    _RBVH.velErr = velErr;
+    _RBVH.angRate = angRate;
+    _RBVH.posOffset = posOffset;
+    _RBVH.timeStamp_ms = timeStamp_ms;
+    _RBVH.delay_ms = delay_ms;
+    WRITE_REPLAY_BLOCK_IFCHANGED(RBVH, _RBVH, old);
+}
+
 #if APM_BUILD_TYPE(APM_BUILD_Replay)
 /*
   handle frame message. This message triggers the EKF2/EKF3 updates and logging
@@ -515,6 +531,16 @@ void AP_DAL::handle_message(const log_RBOH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3)
     _RBOH = msg;
     // note that EKF2 does not support body frame odometry
     ekf3.writeBodyFrameOdom(msg.quality, msg.delPos, msg.delAng, msg.delTime, msg.timeStamp_ms, msg.delay_ms, msg.posOffset);
+}
+
+/*
+  handle body frame velocity data
+*/
+void AP_DAL::handle_message(const log_RBVH &msg, NavEKF2 &ekf2, NavEKF3 &ekf3)
+{
+    _RBVH = msg;
+    // note that EKF2 does not support body frame odometry
+    ekf3.writeBodyFrameVel(msg.vel, msg.velErr, msg.angRate, msg.timeStamp_ms, msg.delay_ms, msg.posOffset);
 }
 
 /*
