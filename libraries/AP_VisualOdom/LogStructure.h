@@ -6,7 +6,8 @@
 #define LOG_IDS_FROM_VISUALODOM \
     LOG_VISUALODOM_MSG, \
     LOG_VISUALPOS_MSG, \
-    LOG_VISUALVEL_MSG
+    LOG_VISUALVEL_MSG, \
+    LOG_VISBODYVEL_MSG
 
 // @LoggerMessage: VISO
 // @Description: Visual Odometry
@@ -92,6 +93,38 @@ struct PACKED log_VisualVelocity {
     int8_t quality;
 };
 
+// @LoggerMessage: VISBV
+// @Description: Vision Body-Frame Velocity (radar RIO route)
+// @Field: TimeUS: System time
+// @Field: RTimeUS: Remote system time
+// @Field: CTimeMS: Corrected system time
+// @Field: VX: Body forward velocity (m/s)
+// @Field: VY: Body right velocity (m/s)
+// @Field: VZ: Body down velocity (m/s)
+// @Field: WX: Body roll rate (rad/s)
+// @Field: WY: Body pitch rate (rad/s)
+// @Field: WZ: Body yaw rate (rad/s)
+// @Field: VErr: Velocity estimate error (m/s)
+// @Field: Rst: Reset counter
+// @Field: Ign: Ignored (quality below threshold)
+// @Field: Q: Quality
+struct PACKED log_VisualBodyVelocity {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    uint64_t remote_time_us;
+    uint32_t time_ms;
+    float vel_x;
+    float vel_y;
+    float vel_z;
+    float ang_x;
+    float ang_y;
+    float ang_z;
+    float vel_err;
+    uint8_t reset_counter;
+    uint8_t ignored;
+    int8_t quality;
+};
+
 #if HAL_VISUALODOM_ENABLED
 #define LOG_STRUCTURE_FROM_VISUALODOM \
     { LOG_VISUALODOM_MSG, sizeof(log_VisualOdom), \
@@ -99,7 +132,9 @@ struct PACKED log_VisualVelocity {
     { LOG_VISUALPOS_MSG, sizeof(log_VisualPosition), \
       "VISP", "QQIffffffffBBb", "TimeUS,RTimeUS,CTimeMS,PX,PY,PZ,R,P,Y,PErr,AErr,Rst,Ign,Q", "sssmmmddhmd--%", "FFC00000000--0" }, \
     { LOG_VISUALVEL_MSG, sizeof(log_VisualVelocity), \
-      "VISV", "QQIffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,VErr,Rst,Ign,Q", "sssnnnn--%", "FFC0000--0" },
+      "VISV", "QQIffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,VErr,Rst,Ign,Q", "sssnnnn--%", "FFC0000--0" }, \
+    { LOG_VISBODYVEL_MSG, sizeof(log_VisualBodyVelocity), \
+      "VISBV", "QQIfffffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,WX,WY,WZ,VErr,Rst,Ign,Q", "sssnnnnnn---%", "FFC0000000--0" },
 #else
 #define LOG_STRUCTURE_FROM_VISUALODOM
 #endif

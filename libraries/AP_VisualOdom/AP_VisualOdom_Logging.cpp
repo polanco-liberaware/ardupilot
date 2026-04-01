@@ -65,4 +65,29 @@ void AP_VisualOdom_Backend::Write_VisualVelocity(uint64_t remote_time_us, uint32
     AP::logger().WriteBlock(&pkt_visualvel, sizeof(log_VisualVelocity));
 }
 
+// Write body-frame velocity sensor data (RIO radar route), velocity in body FRD m/s
+void AP_VisualOdom_Backend::Write_VisualBodyVelocity(uint64_t remote_time_us, uint32_t time_ms,
+                                                     const Vector3f &vel, const Vector3f &ang_rate,
+                                                     float vel_err, uint8_t reset_counter,
+                                                     bool ignored, int8_t quality)
+{
+    const struct log_VisualBodyVelocity pkt {
+        LOG_PACKET_HEADER_INIT(LOG_VISBODYVEL_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : remote_time_us,
+        time_ms         : time_ms,
+        vel_x           : vel.x,
+        vel_y           : vel.y,
+        vel_z           : vel.z,
+        ang_x           : ang_rate.x,
+        ang_y           : ang_rate.y,
+        ang_z           : ang_rate.z,
+        vel_err         : vel_err,
+        reset_counter   : reset_counter,
+        ignored         : (uint8_t)ignored,
+        quality         : quality
+    };
+    AP::logger().WriteBlock(&pkt, sizeof(log_VisualBodyVelocity));
+}
+
 #endif // HAL_VISUALODOM_ENABLED
