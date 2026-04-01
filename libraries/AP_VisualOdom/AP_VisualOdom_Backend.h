@@ -46,6 +46,13 @@ public:
     // quality of -1 means failed, 0 means unknown, 1 is worst, 100 is best
     virtual void handle_vision_speed_estimate(uint64_t remote_time_us, uint32_t time_ms, const Vector3f &vel, uint8_t reset_counter, int8_t quality) = 0;
 
+    // consume body-frame velocity and send to EKF; default no-op for backends that don't support it
+    virtual void handle_body_frame_velocity_estimate(uint64_t remote_time_us, uint32_t time_ms,
+                                                     const Vector3f &vel,
+                                                     const Vector3f &ang_rate,
+                                                     uint8_t reset_counter,
+                                                     int8_t quality) {}
+
     // request sensor's yaw be aligned with vehicle's AHRS/EKF attitude
     virtual void request_align_yaw_to_ahrs() {}
 

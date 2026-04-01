@@ -245,6 +245,20 @@ void AP_VisualOdom::handle_vision_speed_estimate(uint64_t remote_time_us, uint32
     }
 }
 
+void AP_VisualOdom::handle_body_frame_velocity_estimate(uint64_t remote_time_us, uint32_t time_ms,
+                                                        const Vector3f &vel,
+                                                        const Vector3f &ang_rate,
+                                                        uint8_t reset_counter,
+                                                        int8_t quality)
+{
+    if (!enabled()) {
+        return;
+    }
+    if (_driver != nullptr) {
+        _driver->handle_body_frame_velocity_estimate(remote_time_us, time_ms, vel, ang_rate, reset_counter, quality);
+    }
+}
+
 // request sensor's yaw be aligned with vehicle's AHRS/EKF attitude
 void AP_VisualOdom::request_align_yaw_to_ahrs()
 {

@@ -78,4 +78,26 @@ void AP_VisualOdom_MAV::handle_vision_speed_estimate(uint64_t remote_time_us, ui
 #endif
 }
 
+// consume body-frame velocity from radar and send to EKF
+// vel is body FRD (m/s), ang_rate is body angular rate (rad/s)
+void AP_VisualOdom_MAV::handle_body_frame_velocity_estimate(uint64_t remote_time_us, uint32_t time_ms,
+                                                            const Vector3f &vel,
+                                                            const Vector3f &ang_rate,
+                                                            uint8_t reset_counter,
+                                                            int8_t quality)
+{
+    _quality = quality;
+    const bool consume = (_quality >= _frontend.get_quality_min());
+    if (consume) {
+        const float vel_err = _frontend.get_vel_noise();
+        const Vector3f pos_offset = _frontend.get_pos_offset();
+        AP::ahrs().writeBodyFrameVel(vel, vel_err, ang_rate, time_ms, _frontend.get_delay_ms(), pos_offset);
+    }
+    _last_update_ms = AP_HAL::millis();
+#if HAL_LOGGING_ENABLED
+    Write_VisualBodyVelocity(remote_time_us, time_ms, vel, ang_rate,
+                             _frontend.get_vel_noise(), reset_counter, !consume, _quality);
+#endif
+}
+
 #endif  // AP_VISUALODOM_MAV_ENABLED
