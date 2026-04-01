@@ -3889,6 +3889,21 @@ void GCS_MAVLINK::handle_odometry(const mavlink_message_t &msg)
         return;
     }
 
+    const uint32_t timestamp_ms = correct_offboard_timestamp_usec_to_ms(m.time_usec, PAYLOAD_SIZE(chan, ODOMETRY));
+
+    // If all three angular-rate fields are finite, treat this as a body-twist
+    // message (e.g. RIO radar) and route to the body-frame velocity ingress.
+    // Do NOT call handle_pose_estimate() on this route — there is no valid pose.
+    if (!isnan(m.rollspeed) && !isnan(m.pitchspeed) && !isnan(m.yawspeed)) {
+        const Vector3f vel_bf{m.vx, m.vy, m.vz};
+        const Vector3f ang_rate{m.rollspeed, m.pitchspeed, m.yawspeed};
+        visual_odom->handle_body_frame_velocity_estimate(m.time_usec, timestamp_ms,
+                                                         vel_bf, ang_rate,
+                                                         m.reset_counter, m.quality);
+        return;
+    }
+
+    // Legacy path: pose + NED velocity (angular rates not present or NaN)
     Quaternion q{m.q[0],m.q[1],m.q[2],m.q[3]};
 
     float posErr = 0;
@@ -3898,7 +3913,6 @@ void GCS_MAVLINK::handle_odometry(const mavlink_message_t &msg)
         angErr = cbrtf(sq(m.pose_covariance[15])+sq(m.pose_covariance[18])+sq(m.pose_covariance[20]));
     }
 
-    const uint32_t timestamp_ms = correct_offboard_timestamp_usec_to_ms(m.time_usec, PAYLOAD_SIZE(chan, ODOMETRY));
     visual_odom->handle_pose_estimate(m.time_usec, timestamp_ms, m.x, m.y, m.z, q, posErr, angErr, m.reset_counter, m.quality);
 
     // convert velocity vector from FRD to NED frame
