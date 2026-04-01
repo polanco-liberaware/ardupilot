@@ -111,18 +111,19 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
 {
     uint32_t now = AP_HAL::millis();
 
-    // Get EKF horizontal velocity in earth NE frame (m/s).
-    const Vector3f vel_neu_cms = copter.inertial_nav.get_velocity_neu_cms();
-    Vector2f vel_ef(vel_neu_cms.x * 0.01f, vel_neu_cms.y * 0.01f);
+    // Get body-frame velocity from the canonical estimator output.
+    // x=forward, y=right, z=down (body FRD, m/s).
+    // If unavailable (EKF not healthy), fall back to zero so the PI integrator
+    // drains rather than holding a stale correction.
+    Vector3f vel_body;
+    if (!copter.ahrs.get_velocity_body(vel_body)) {
+        vel_body.zero();
+    }
 
-    // Rotate to body frame: earth_to_body2D produces [v_forward, v_right].
-    // The optical-flow sensor convention (AP_OpticalFlow_SITL.cpp:89-90) is:
-    //   flowRate.x = -v_right   (negative right = positive roll-axis flow)
-    //   flowRate.y = +v_forward  (forward = positive pitch-axis flow)
-    // Apply the same axis mapping so sensor_flow is in the exact same frame
-    // the original code used — clamp, filter, braking, and PI all unchanged.
-    const Vector2f vel_bf = copter.ahrs.earth_to_body2D(vel_ef);
-    Vector2f sensor_flow(-vel_bf.y, vel_bf.x);
+    // Apply the optical-flow axis mapping used throughout FlowHold:
+    //   sensor_flow.x = -v_right   (negative right = positive roll-axis flow)
+    //   sensor_flow.y = +v_forward  (positive forward = positive pitch-axis flow)
+    Vector2f sensor_flow(-vel_body.y, vel_body.x);
 
     // clamp and filter in the optical-flow axis frame (preserves filter memory
     // consistency across yaw rotations, matching the original path)
