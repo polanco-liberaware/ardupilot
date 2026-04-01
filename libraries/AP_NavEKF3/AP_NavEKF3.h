@@ -214,6 +214,20 @@ public:
     void writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, uint16_t delay_ms, const Vector3f &posOffset);
 
     /*
+     * Write body frame velocity from direct velocity measurement (e.g. radar)
+     *
+     * vel is the XYZ velocity measured in body frame (m/s)
+     * velErr is the 1-sigma accuracy of the velocity measurement (m/s)
+     * angRate is the angular rate of the vehicle body frame relative to the earth frame (rad/s)
+     * timeStamp_ms is the timestamp of the measurement (msec)
+     * delay_ms is the average delay of external nav system measurements relative to inertial measurements (msec)
+     * posOffset is the XYZ body frame position of the sensor (m)
+    */
+    void writeBodyFrameVel(const Vector3f &vel, float velErr,
+                           const Vector3f &angRate, uint32_t timeStamp_ms,
+                           uint16_t delay_ms, const Vector3f &posOffset);
+
+    /*
      * Write odometry data from a wheel encoder. The axis of rotation is assumed to be parallel to the vehicle body axis
      *
      * delAng is the measured change in angular position from the previous measurement where a positive rotation is produced by forward motion of the vehicle (rad)
