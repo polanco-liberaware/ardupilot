@@ -2414,6 +2414,15 @@ void  AP_AHRS::writeBodyFrameOdom(float quality, const Vector3f &delPos, const V
 #endif
 }
 
+void AP_AHRS::writeBodyFrameVel(const Vector3f &vel, float err,
+                                const Vector3f &angRate, uint32_t timeStamp_ms,
+                                uint16_t delay_ms, const Vector3f &posOffset)
+{
+#if HAL_NAVEKF3_AVAILABLE
+    EKF3.writeBodyFrameVel(vel, err, angRate, timeStamp_ms, delay_ms, posOffset);
+#endif
+}
+
 // Write position and quaternion data from an external navigation system
 void AP_AHRS::writeExtNavData(const Vector3f &pos, const Quaternion &quat, float posErr, float angErr, uint32_t timeStamp_ms, uint16_t delay_ms, uint32_t resetTime_ms)
 {
@@ -2445,6 +2454,19 @@ void AP_AHRS::writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeSt
 #if HAL_NAVEKF3_AVAILABLE
     EKF3.writeExtNavVelData(vel, err, timeStamp_ms, delay_ms);
 #endif
+}
+
+// get estimated velocity in body FRD frame (m/s): x=forward, y=right, z=down
+bool AP_AHRS::get_velocity_body(Vector3f &vel) const
+{
+    Vector3f vel_ned;
+    if (!get_velocity_NED(vel_ned)) {
+        return false;
+    }
+    // rotate NED velocity into body frame using current attitude
+    const Matrix3f &rot = get_rotation_body_to_ned();
+    vel = rot.mul_transpose(vel_ned);
+    return true;
 }
 
 // get speed limit and XY navigation gain scale factor

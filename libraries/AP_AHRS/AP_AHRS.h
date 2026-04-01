@@ -299,6 +299,11 @@ public:
     // write body odometry measurements to the EKF
     void writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, uint16_t delay_ms, const Vector3f &posOffset);
 
+    // write body frame velocity measurement (direct velocity, no delta conversion)
+    void writeBodyFrameVel(const Vector3f &vel, float err,
+                           const Vector3f &angRate, uint32_t timeStamp_ms,
+                           uint16_t delay_ms, const Vector3f &posOffset);
+
     // Writes the default equivalent airspeed and its 1-sigma uncertainty in m/s to be used in forward flight if a measured airspeed is required and not available.
     void writeDefaultAirSpeed(float airspeed, float uncertainty);
 
@@ -307,6 +312,10 @@ public:
 
     // Write velocity data from an external navigation system
     void writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeStamp_ms, uint16_t delay_ms);
+
+    // get estimated velocity in body FRD frame: x=forward, y=right, z=down (m/s)
+    // returns true if estimate is valid
+    bool get_velocity_body(Vector3f &vel) const;
 
     // get speed limit
     void getControlLimits(float &ekfGndSpdLimit, float &controlScaleXY) const;
