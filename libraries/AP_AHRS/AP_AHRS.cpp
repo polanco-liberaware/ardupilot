@@ -3498,6 +3498,31 @@ bool AP_AHRS::using_extnav_for_yaw(void) const
     return false;
 }
 
+// check if external nav is configured for horizontal position estimation
+bool AP_AHRS::using_extnav_for_posxy(void) const
+{
+    switch (active_EKF_type()) {
+#if HAL_NAVEKF3_AVAILABLE
+    case EKFType::THREE:
+        return EKF3.configuredToUseExtNavForPosXY();
+#endif
+#if HAL_NAVEKF2_AVAILABLE
+    case EKFType::TWO:
+#endif
+#if AP_AHRS_DCM_ENABLED
+    case EKFType::DCM:
+#endif
+#if AP_AHRS_SIM_ENABLED
+    case EKFType::SIM:
+#endif
+#if AP_AHRS_EXTERNAL_ENABLED
+    case EKFType::EXTERNAL:
+#endif
+        return false;
+    }
+    return false;
+}
+
 // set and save the alt noise parameter value
 void AP_AHRS::set_alt_measurement_noise(float noise)
 {

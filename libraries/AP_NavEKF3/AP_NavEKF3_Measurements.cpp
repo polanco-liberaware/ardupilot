@@ -180,8 +180,11 @@ void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
     const uint32_t now_ms = AP_HAL::millis();
     const bool active_body_odom_source_fresh = (now_ms - bodyOdmMeasTime_ms) < 200U;
 
-    // reject NaN inputs
-    if (vel.is_nan() || isnan(velErr) || angRate.is_nan() || posOffset.is_nan()) {
+    // reject non-finite inputs
+    if (vel.is_nan() || vel.is_inf() ||
+        !isfinite(velErr) ||
+        angRate.is_nan() || angRate.is_inf() ||
+        posOffset.is_nan() || posOffset.is_inf()) {
         return;
     }
 

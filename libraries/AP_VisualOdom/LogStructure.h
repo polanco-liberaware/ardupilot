@@ -134,7 +134,7 @@ struct PACKED log_VisualBodyVelocity {
     { LOG_VISUALVEL_MSG, sizeof(log_VisualVelocity), \
       "VISV", "QQIffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,VErr,Rst,Ign,Q", "sssnnnn--%", "FFC0000--0" }, \
     { LOG_VISBODYVEL_MSG, sizeof(log_VisualBodyVelocity), \
-      "VISBV", "QQIfffffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,WX,WY,WZ,VErr,Rst,Ign,Q", "sssnnnnnn---%", "FFC0000000--0" },
+      "VISBV", "QQIfffffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,WX,WY,WZ,VErr,Rst,Ign,Q", "sssnnnEEE---%", "FFC0000000--0" },
 #else
 #define LOG_STRUCTURE_FROM_VISUALODOM
 #endif

@@ -242,6 +242,11 @@ Pilot interaction:
 - **stick released:** braking resumes from the current velocity
 - **EKF velocity invalid:** FlowHold resets horizontal PI/filter/braking state, skips horizontal
   correction, and behaves like AltHold on XY until `flags.horiz_vel` is valid again
+- **generic position modes:** body-velocity-only EXTNAV aiding is **not** treated as generic
+  relative-position availability for other `position_ok()`-gated modes; this route remains
+  intentionally scoped to FlowHold unless a true relative-position source is also configured.
+  `ekf_has_relative_position()` now unlocks only for optical flow, dead reckoning, or
+  EXTNAV configurations that provide XY position, not velocity-only EXTNAV.
 
 Control-side implementation status:
 - `AP_AHRS::get_velocity_body()` now provides the horizontal velocity used by FlowHold

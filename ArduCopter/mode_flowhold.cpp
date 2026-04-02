@@ -106,7 +106,6 @@ bool ModeFlowHold::init(bool ignore_checks)
 
     quality_filtered = 0;
     reset_flowhold_controller_state();
-    last_stick_input_ms = 0;
 
     flow_pi_xy.set_dt(1.0/copter.scheduler.get_loop_rate_hz());
 
@@ -190,6 +189,7 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
         flow_output.zero();
     }
 
+    // Keep the frozen I-term contribution during braking; only integrator growth is gated above.
     flow_output += xy_I;
     flow_output *= copter.aparm.angle_max;
     bf_angles += flow_output;
