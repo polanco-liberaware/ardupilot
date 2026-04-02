@@ -3896,6 +3896,54 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.reboot_sitl()
 
+        self.progress("Making sure we now get RANGEFINDER messages")
+        m = self.assert_receive_message('RANGEFINDER', timeout=10)
+
+        self.progress("Checking RangeFinder is marked as enabled in mavlink")
+        m = self.mav.recv_match(type='SYS_STATUS',
+                                blocking=True,
+                                timeout=10)
+        flags = m.onboard_control_sensors_enabled
+        if not flags & mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION:
+            raise NotAchievedException("Laser not enabled in SYS_STATUS")
+        self.progress("Disabling laser using switch")
+        self.set_rc(9, 1000)
+        self.delay_sim_time(1)
+        self.progress("Checking RangeFinder is marked as disabled in mavlink")
+        m = self.mav.recv_match(type='SYS_STATUS',
+                                blocking=True,
+                                timeout=10)
+        flags = m.onboard_control_sensors_enabled
+        if flags & mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION:
+            raise NotAchievedException("Laser enabled in SYS_STATUS")
+
+        self.progress("Re-enabling rangefinder")
+        self.set_rc(9, 2000)
+        self.delay_sim_time(1)
+        m = self.mav.recv_match(type='SYS_STATUS',
+                                blocking=True,
+                                timeout=10)
+        flags = m.onboard_control_sensors_enabled
+        if not flags & mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION:
+            raise NotAchievedException("Laser not enabled in SYS_STATUS")
+
+        self.takeoff(10, mode="LOITER")
+
+        m_r = self.mav.recv_match(type='RANGEFINDER',
+                                  blocking=True)
+        m_p = self.mav.recv_match(type='GLOBAL_POSITION_INT',
+                                  blocking=True)
+
+        if abs(m_r.distance - m_p.relative_alt/1000) > 1:
+            raise NotAchievedException(
+                "rangefinder/global position int mismatch %0.2f vs %0.2f" %
+                (m_r.distance, m_p.relative_alt/1000))
+
+        self.land_and_disarm()
+
+        if not self.current_onboard_log_contains_message("RFND"):
+            raise NotAchievedException("Did not see expected RFND message")
+
     def ODOMETRYBodyTwistContract(self):
         """Validate explicit ODOMETRY body-twist contract and ambiguous-packet rejection."""
         self.context_push()
@@ -3956,53 +4004,134 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.context_pop()
         self.reboot_sitl()
 
-        self.progress("Making sure we now get RANGEFINDER messages")
-        m = self.assert_receive_message('RANGEFINDER', timeout=10)
+    def FlowHoldBodyFrameController(self):
+        """Validate FlowHold PI/integrator remain body-frame through yaw changes."""
+        self.set_parameters({
+            "AHRS_EKF_TYPE": 3,
+            "EK3_ENABLE": 1,
+            "GPS1_TYPE": 0,
+            "SIM_GPS1_ENABLE": 0,
+            "VISO_TYPE": 1,
+            "VISO_DELAY_MS": 0,
+            "VISO_QUAL_MIN": 0,
+            "EK3_SRC1_POSXY": 0,
+            "EK3_SRC1_VELXY": 6,
+            "EK3_SRC1_POSZ": 1,
+            "EK3_SRC1_VELZ": 0,
+            "EK3_SRC1_YAW": 0,
+            "FHLD_XY_P": 0.0,
+            "FHLD_XY_I": 1.0,
+            "FHLD_XY_IMAX": 10.0,
+            "FHLD_FILT_HZ": 10.0,
+            "FHLD_FLOW_MAX": 2.0,
+        })
+        self.reboot_sitl()
 
-        self.progress("Checking RangeFinder is marked as enabled in mavlink")
-        m = self.mav.recv_match(type='SYS_STATUS',
-                                blocking=True,
-                                timeout=10)
-        flags = m.onboard_control_sensors_enabled
-        if not flags & mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION:
-            raise NotAchievedException("Laser not enabled in SYS_STATUS")
-        self.progress("Disabling laser using switch")
-        self.set_rc(9, 1000)
-        self.delay_sim_time(1)
-        self.progress("Checking RangeFinder is marked as disabled in mavlink")
-        m = self.mav.recv_match(type='SYS_STATUS',
-                                blocking=True,
-                                timeout=10)
-        flags = m.onboard_control_sensors_enabled
-        if flags & mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION:
-            raise NotAchievedException("Laser enabled in SYS_STATUS")
+        def send_body_twist(vx=0.4, vy=0.0, vz=0.0):
+            att = self.assert_receive_message('ATTITUDE', timeout=1)
+            self.mav.mav.odometry_send(
+                int(self.get_sim_time_cached() * 1.0e6),
+                mavutil.mavlink.MAV_FRAME_LOCAL_FRD,
+                mavutil.mavlink.MAV_FRAME_BODY_FRD,
+                0.0, 0.0, 0.0,
+                [1.0, 0.0, 0.0, 0.0],
+                vx, vy, vz,
+                att.rollspeed, att.pitchspeed, att.yawspeed,
+                [float("nan")] + [0.0] * 20,
+                [float("nan")] * 21,
+                0,
+                mavutil.mavlink.MAV_ESTIMATOR_TYPE_UNKNOWN,
+                100
+            )
+            return mavextra.wrap_360(math.degrees(att.yaw))
 
-        self.progress("Re-enabling rangefinder")
-        self.set_rc(9, 2000)
-        self.delay_sim_time(1)
-        m = self.mav.recv_match(type='SYS_STATUS',
-                                blocking=True,
-                                timeout=10)
-        flags = m.onboard_control_sensors_enabled
-        if not flags & mavutil.mavlink.MAV_SYS_STATUS_SENSOR_LASER_POSITION:
-            raise NotAchievedException("Laser not enabled in SYS_STATUS")
+        def stream_body_twist(duration, vx=0.4, vy=0.0, vz=0.0):
+            tstart = self.get_sim_time()
+            while self.get_sim_time_cached() - tstart < duration:
+                send_body_twist(vx, vy, vz)
+                self.delay_sim_time(0.05)
 
-        self.takeoff(10, mode="LOITER")
+        def yaw_to_heading_with_body_twist(target_heading, vx=0.4, vy=0.0, vz=0.0, timeout=20):
+            tstart = self.get_sim_time()
+            while self.get_sim_time_cached() - tstart < timeout:
+                heading = send_body_twist(vx, vy, vz)
+                if abs(mavextra.angle_diff(target_heading, heading)) < 8:
+                    self.delay_sim_time(0.2)
+                    return
+                self.delay_sim_time(0.05)
+            raise AutoTestTimeoutException("Did not reach target heading while streaming body-twist ODOMETRY")
 
-        m_r = self.mav.recv_match(type='RANGEFINDER',
-                                  blocking=True)
-        m_p = self.mav.recv_match(type='GLOBAL_POSITION_INT',
-                                  blocking=True)
+        self.takeoff(alt_min=5, mode="ALT_HOLD", require_absolute=False, takeoff_throttle=1800)
+        self.set_rc_from_map({
+            1: 1500,
+            2: 1500,
+            3: 1500,
+            4: 1500,
+        })
 
-        if abs(m_r.distance - m_p.relative_alt/1000) > 1:
-            raise NotAchievedException(
-                "rangefinder/global position int mismatch %0.2f vs %0.2f" %
-                (m_r.distance, m_p.relative_alt/1000))
+        # Give EKF3 time to accept the body-twist source and for the post-arm
+        # FlowHold delay gate to clear.
+        stream_body_twist(4.0)
 
-        self.land_and_disarm()
+        self.change_mode("FLOWHOLD")
+        self.wait_mode("FLOWHOLD")
 
-        if not self.current_onboard_log_contains_message("RFND"):
-            raise NotAchievedException("Did not see expected RFND message")
+        pre_start_us = int(self.get_sim_time() * 1.0e6)
+        stream_body_twist(4.0)
+        pre_end_us = int(self.get_sim_time() * 1.0e6)
+
+        initial_heading = self.get_heading()
+        target_heading = mavextra.wrap_360(initial_heading + 90)
+        self.set_rc(4, 1580)
+        yaw_to_heading_with_body_twist(target_heading)
+        self.set_rc(4, 1500)
+
+        post_start_us = int(self.get_sim_time() * 1.0e6)
+        stream_body_twist(4.0)
+        post_end_us = int(self.get_sim_time() * 1.0e6)
+
+        self.change_mode("LAND")
+        self.wait_disarmed(timeout=120)
+
+        if not self.current_onboard_log_contains_message("FHLD"):
+            raise NotAchievedException("Did not find FHLD message after FlowHold body-frame controller test")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        pre_sum_abs_ix = 0.0
+        pre_sum_abs_iy = 0.0
+        pre_count = 0
+        post_sum_abs_ix = 0.0
+        post_sum_abs_iy = 0.0
+        post_count = 0
+
+        while True:
+            m = dfreader.recv_match(type='FHLD')
+            if m is None:
+                break
+            if pre_start_us <= m.TimeUS <= pre_end_us:
+                pre_sum_abs_ix += abs(m.Ix)
+                pre_sum_abs_iy += abs(m.Iy)
+                pre_count += 1
+            if post_start_us <= m.TimeUS <= post_end_us:
+                post_sum_abs_ix += abs(m.Ix)
+                post_sum_abs_iy += abs(m.Iy)
+                post_count += 1
+
+        if pre_count < 5 or post_count < 5:
+            raise NotAchievedException("Did not collect enough FHLD samples for pre/post-yaw comparison")
+
+        pre_avg_abs_ix = pre_sum_abs_ix / pre_count
+        pre_avg_abs_iy = pre_sum_abs_iy / pre_count
+        post_avg_abs_ix = post_sum_abs_ix / post_count
+        post_avg_abs_iy = post_sum_abs_iy / post_count
+
+        self.progress("FlowHold pre-yaw |Ix|=%f |Iy|=%f" % (pre_avg_abs_ix, pre_avg_abs_iy))
+        self.progress("FlowHold post-yaw |Ix|=%f |Iy|=%f" % (post_avg_abs_ix, post_avg_abs_iy))
+
+        if pre_avg_abs_iy <= max(0.2, pre_avg_abs_ix * 2.0):
+            raise NotAchievedException("FlowHold pre-yaw integrator did not build on the forward body axis")
+        if post_avg_abs_iy <= max(0.2, post_avg_abs_ix * 2.0):
+            raise NotAchievedException("FlowHold post-yaw integrator rotated away from the forward body axis")
 
     def SplineTerrain(self):
         '''Test Splines and Terrain'''
@@ -10881,6 +11010,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
              self.BodyFrameOdom,
              self.GPSViconSwitching,
              self.ODOMETRYBodyTwistContract,
+             self.FlowHoldBodyFrameController,
         ])
         return ret
 

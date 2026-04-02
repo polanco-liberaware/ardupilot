@@ -74,8 +74,6 @@ ModeFlowHold::ModeFlowHold(void) : Mode()
     AP_Param::setup_object_defaults(this, var_info);
 }
 
-#define CONTROL_FLOWHOLD_EARTH_FRAME 0
-
 // flowhold_init - initialise flowhold controller
 bool ModeFlowHold::init(bool ignore_checks)
 {
@@ -97,7 +95,12 @@ bool ModeFlowHold::init(bool ignore_checks)
 
     quality_filtered = 0;
     flow_pi_xy.reset_I();
+    flow_pi_xy.reset_filter();
+    flow_filter.reset();
     limited = false;
+    xy_I.zero();
+    braking = false;
+    last_stick_input_ms = 0;
 
     flow_pi_xy.set_dt(1.0/copter.scheduler.get_loop_rate_hz());
 
@@ -131,21 +134,13 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
     sensor_flow.y = constrain_float(sensor_flow.y, -flow_max, flow_max);
     sensor_flow = flow_filter.apply(sensor_flow);
 
-    // Rotate to earth frame for the PI controller — identical to the original
-    // body_to_earth2D(sensor_flow) call, which treated sensor_flow as a body
-    // vector and rotated it to earth. That is still correct here: sensor_flow
-    // is in body frame (with the optical-flow axis labeling) and body_to_earth2D
-    // maps it to the earth NE frame the PI controller expects.
-    Vector2f input_ef = copter.ahrs.body_to_earth2D(sensor_flow);
+    // Keep the controller entirely in the optical-flow/body-axis basis so
+    // filtered error and integrator state remain aligned through yaw changes.
+    flow_pi_xy.set_input(sensor_flow);
 
-    // run PI controller
-    flow_pi_xy.set_input(input_ef);
-
-    // get earth frame controller attitude in centi-degrees
-    Vector2f ef_output;
-
-    // get P term
-    ef_output = flow_pi_xy.get_p();
+    // Controller correction in the same optical-flow/body-axis basis. This is
+    // later added directly to body lean commands.
+    Vector2f flow_output = flow_pi_xy.get_p();
 
     if (stick_input) {
         last_stick_input_ms = now;
@@ -163,13 +158,14 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
     }
 
     if (!stick_input && !braking) {
-        // get I term
+        // Update only the integrator state on top of the already-computed P
+        // term. Using get_pi() here would double-count P.
         if (limited) {
             // only allow I term to shrink in length
             xy_I = flow_pi_xy.get_i_shrink();
         } else {
             // normal I term operation
-            xy_I = flow_pi_xy.get_pi();
+            xy_I = flow_pi_xy.get_i();
         }
     }
 
@@ -185,14 +181,12 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
             }
             bf_angles[i] = lean_angle_cd;
         }
-        ef_output.zero();
+        flow_output.zero();
     }
 
-    ef_output += xy_I;
-    ef_output *= copter.aparm.angle_max;
-
-    // convert to body frame
-    bf_angles += copter.ahrs.earth_to_body2D(ef_output);
+    flow_output += xy_I;
+    flow_output *= copter.aparm.angle_max;
+    bf_angles += flow_output;
 
     // set limited flag to prevent integrator windup
     limited = fabsf(bf_angles.x) > copter.aparm.angle_max || fabsf(bf_angles.y) > copter.aparm.angle_max;
@@ -208,11 +202,11 @@ void ModeFlowHold::flowhold_flow_to_angle(Vector2f &bf_angles, bool stick_input)
 // @Field: TimeUS: Time since system startup
 // @Field: SFx: Filtered adapted optical-flow control channel X, equivalent to negative body-right velocity in m/s
 // @Field: SFy: Filtered adapted optical-flow control channel Y, equivalent to positive body-forward velocity in m/s
-// @Field: Ax: Target lean angle, X-Axis
-// @Field: Ay: Target lean angle, Y-Axis
+// @Field: Ax: Target body lean angle correction, X-Axis
+// @Field: Ay: Target body lean angle correction, Y-Axis
 // @Field: Qual: EKF horizontal velocity validity flag, reported as 0 when invalid and 255 when valid
-// @Field: Ix: Integral part of PI controller, X-Axis
-// @Field: Iy: Integral part of PI controller, Y-Axis
+// @Field: Ix: Body/optical-axis PI integrator component, X-Axis
+// @Field: Iy: Body/optical-axis PI integrator component, Y-Axis
 
     if (log_counter++ % 20 == 0) {
         AP::logger().WriteStreaming("FHLD", "TimeUS,SFx,SFy,Ax,Ay,Qual,Ix,Iy", "Qfffffff",
@@ -262,6 +256,10 @@ void ModeFlowHold::run()
         copter.attitude_control->reset_yaw_target_and_rate();
         copter.pos_control->relax_z_controller(0.0f);   // forces throttle output to decay to zero
         flow_pi_xy.reset_I();
+        flow_pi_xy.reset_filter();
+        flow_filter.reset();
+        xy_I.zero();
+        braking = false;
         break;
 
     case AltHoldModeState::Takeoff:
@@ -287,6 +285,11 @@ void ModeFlowHold::run()
     case AltHoldModeState::Landed_Pre_Takeoff:
         attitude_control->reset_rate_controller_I_terms_smoothly();
         pos_control->relax_z_controller(0.0f);   // forces throttle output to decay to zero
+        flow_pi_xy.reset_I();
+        flow_pi_xy.reset_filter();
+        flow_filter.reset();
+        xy_I.zero();
+        braking = false;
         break;
 
     case AltHoldModeState::Flying:

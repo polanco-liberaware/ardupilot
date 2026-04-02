@@ -1,6 +1,7 @@
 # Body-Frame Velocity Architecture: Findings and Decision
 
-> **Status:** Architecture analysis complete — implementation not yet started.
+> **Status:** Plan B body-velocity ingress and the FlowHold body-frame controller hand-off are
+> implemented.
 >
 > This document records the design investigation for integrating RIO body-frame radar velocity
 > into ArduCopter, the options evaluated, and the conclusions reached.
@@ -232,7 +233,7 @@ blocking on that work.
 | 3 | `AP_AHRS::get_velocity_body()` | Estimator output | Canonical body-velocity output API | Body FRD velocity | Yes | Controller should consume body velocity directly |
 | 4 | `ModeFlowHold::flowhold_flow_to_angle()` | Body FRD velocity | Remap to FlowHold's historical optical-flow axes: `sensor_flow = [-v_right, +v_forward]` | Body/optical-flow axes | Yes | Axis relabel only; no world-frame meaning introduced |
 | 5 | `flowhold_flow_to_angle()` | Body/optical-flow axes | Clamp + low-pass filter + braking + PI in body axes | Body/optical-flow correction | Yes | Intended final control structure |
-| 6 | `flowhold_flow_to_angle()` | Body/optical-flow correction | Convert back to `bf_angles` for roll/pitch lean correction | Body lean correction | Yes | Still body-referenced |
+| 6 | `flowhold_flow_to_angle()` | Body/optical-flow correction | Directly sum into `bf_angles` roll/pitch channels | Body lean correction | Yes | No earth-frame detour remains in the horizontal loop |
 | 7 | `attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(...)` | Body lean + yaw-rate command | Attitude/rate control and motor mixing | Motor response | Yes | Normal multirotor control path |
 
 Pilot interaction:
@@ -241,9 +242,12 @@ Pilot interaction:
 - **stick released:** braking resumes from the current velocity
 - **EKF velocity invalid:** horizontal correction is skipped and the mode degrades toward AltHold behavior
 
-Control-side work still required:
-- replace the current mode-local world->body reconstruction with `AP_AHRS::get_velocity_body()`
-- keep braking and PI correction in body axes through the horizontal loop
+Control-side implementation status:
+- `AP_AHRS::get_velocity_body()` now provides the horizontal velocity used by FlowHold
+- FlowHold clamp, filter, braking, PI, and stored `xy_I` now remain in body/optical axes through
+  the full horizontal loop
+- removing the earth-frame PI detour avoids stale integral corrections rotating into the wrong body
+  axis after yaw maneuvers
 
 Control-side caution:
 - FlowHold is the right pilot interface, but it is not a pure body-velocity setpoint controller
@@ -793,7 +797,7 @@ Behavior:
 
 #### L. `ArduCopter/mode_flowhold.cpp`
 
-Refactor `ModeFlowHold::flowhold_flow_to_angle()` into a body-axis controller.
+`ModeFlowHold::flowhold_flow_to_angle()` has been refactored into a body-axis controller.
 
 Keep:
 - the current state machine
@@ -816,6 +820,8 @@ Change:
 Semantic note:
 - this changes the horizontal integrator from earth-referenced to body-referenced
 - for this project, that is intentional and desirable
+- it also removes the stale-integrator failure mode where accumulated earth-frame correction could
+  rotate into the wrong body axis after yaw changes
 
 ### 9.4 Why FlowHold remains the control mode
 

@@ -130,6 +130,11 @@ void AC_PI_2D::reset_I()
     _integrator.zero();
 }
 
+void AC_PI_2D::reset_filter()
+{
+    _flags._reset_filter = true;
+}
+
 void AC_PI_2D::load_gains()
 {
     _kp.load();
