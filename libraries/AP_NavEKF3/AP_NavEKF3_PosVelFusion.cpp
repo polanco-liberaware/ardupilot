@@ -1411,6 +1411,7 @@ void NavEKF3_core::FuseBodyVel()
 {
     Vector24 H_VEL;
     Vector3F bodyVelPred;
+    const bool fuse_body_vel_z = frontend->sources.useVelZSource(AP_NavEKF_Source::SourceZ::EXTNAV);
 
     // Copy required states to local variable names
     ftype q0  = stateStruct.quat[0];
@@ -1423,6 +1424,9 @@ void NavEKF3_core::FuseBodyVel()
 
     // Fuse X, Y and Z axis measurements sequentially assuming observation errors are uncorrelated
     for (uint8_t obsIndex=0; obsIndex<=2; obsIndex++) {
+        if ((obsIndex == 2) && !fuse_body_vel_z) {
+            continue;
+        }
 
         // calculate relative velocity in sensor frame including the relative motion due to rotation
         bodyVelPred = (prevTnb * stateStruct.velocity);

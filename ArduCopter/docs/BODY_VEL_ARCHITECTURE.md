@@ -263,7 +263,7 @@ VISO_POS_X/Y/Z  = measured # Radar offset from IMU in body frame (m)
 
 # EKF3 source configuration
 EK3_SRC1_POSXY  = 0        # None (no position source)
-EK3_SRC1_VELXY  = 6        # EXTNAV (activates body odometry path via readyToUseBodyOdm)
+EK3_SRC1_VELXY  = 6        # EXTNAV (activates body odometry path for body-frame XY fusion)
 EK3_SRC1_POSZ   = 1        # Barometer
 EK3_SRC1_VELZ   = 0        # None by default; set to 6 only if radar Z velocity is trustworthy
 EK3_SRC1_YAW    = 0        # None
@@ -303,6 +303,56 @@ Important note:
 - that is why the preferred route avoids a new parameter-based frame switch
 - Mission Planner does not require mandatory protocol changes for Plan B unless we later want UI,
   packet generation, or packet-inspection support for this contract
+- Body-frame XY fusion is enabled by `EK3_SRC1_VELXY = EXTNAV`
+- Body-frame Z fusion is independent and is enabled only when `EK3_SRC1_VELZ = EXTNAV`
+
+### 4.1 Instructions for CC-Side
+
+If you are implementing the companion-computer sender, treat this as a strict packet contract, not
+as a best-effort hint.
+
+Send one MAVLink `ODOMETRY` message per radar update with:
+
+- `frame_id = MAV_FRAME_LOCAL_FRD`
+- `child_frame_id = MAV_FRAME_BODY_FRD`
+- `estimator_type = MAV_ESTIMATOR_TYPE_UNKNOWN`
+- `vx, vy, vz` = body-frame linear velocity in **FRD**
+  - `+x` = forward
+  - `+y` = right
+  - `+z` = down
+- `rollspeed, pitchspeed, yawspeed` = body angular rates in **rad/s**
+- `pose_covariance[0] = NaN`
+- `quality` = sensor confidence if available, otherwise `0`
+
+CC-side rules:
+
+- Do **not** rotate radar velocity into NED or any world frame before sending it.
+- Do **not** use quaternion fields to convey pose on this route; ArduPilot ignores them for the
+  body-twist contract.
+- Do **not** send a valid pose covariance with `estimator_type = UNKNOWN`; ArduPilot treats that as
+  an ambiguous packet and rejects it.
+- Do **not** zero missing angular-rate fields; if the CC cannot provide finite body rates, this
+  route is not valid for that packet.
+- Keep `time_usec` aligned to the measurement/receive time used to characterize the radar pipeline,
+  because ArduPilot applies `VISO_DELAY_MS` against that timestamp.
+- Measure and tune `VISO_DELAY_MS` from the real CC pipeline latency instead of guessing it.
+
+Flight-controller settings the CC engineer should expect:
+
+- `VISO_TYPE = 1`
+- `EK3_SRC1_VELXY = 6` to enable body-frame XY fusion
+- `EK3_SRC1_VELZ = 0` by default; set to `6` only if the radar Z velocity is validated
+- `VISO_VEL_M_NSE`, `VISO_DELAY_MS`, and `VISO_POS_X/Y/Z` must match the actual sensor and mount
+- `VISO_QUAL_MIN` can block low-confidence packets; if `quality` is populated on the CC, it should
+  follow the normal ArduPilot convention (`-1` failed, `0` unknown, `1..100` usable confidence)
+
+Minimal practical checklist for the CC implementation:
+
+1. Publish body FRD velocity directly from radar processing.
+2. Publish finite body angular rates for the same sample.
+3. Mark the packet as twist-only with `estimator_type = UNKNOWN` and `pose_covariance[0] = NaN`.
+4. Keep packet timing and `VISO_DELAY_MS` consistent with the actual measured latency.
+5. Leave Z fusion disabled until logs show the radar Z channel is trustworthy.
 
 ---
 
