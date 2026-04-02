@@ -117,20 +117,23 @@ void NavEKF3_core::writeBodyFrameOdom(float quality, const Vector3f &delPos, con
         return;
     }
 
+    const uint32_t recv_time_ms = timeStamp_ms;
+
     // limit update rate to maximum allowed by sensor buffers and fusion process
     // don't try to write to buffer until the filter has been initialised
-    if (((timeStamp_ms - bodyOdmMeasTime_ms) < frontend->sensorIntervalMin_ms) || (delTime < dtEkfAvg) || !statesInitialised) {
+    if (((recv_time_ms - bodyOdmMeasTime_ms) < frontend->sensorIntervalMin_ms) || (delTime < dtEkfAvg) || !statesInitialised) {
         return;
     }
 
     // subtract delay from timestamp
-    timeStamp_ms -= delay_ms;
+    timeStamp_ms = (recv_time_ms > delay_ms) ? (recv_time_ms - delay_ms) : 0;
+    timeStamp_ms = MAX(timeStamp_ms, imuDataDelayed.time_ms);
 
     bodyOdmDataNew.body_offset = posOffset.toftype();
     bodyOdmDataNew.vel = delPos.toftype() * (1.0/delTime);
     bodyOdmDataNew.time_ms = timeStamp_ms;
     bodyOdmDataNew.angRate = (delAng * (1.0/delTime)).toftype();
-    bodyOdmMeasTime_ms = timeStamp_ms;
+    bodyOdmMeasTime_ms = recv_time_ms;
 
     // simple model of accuracy
     // TODO move this calculation outside of EKF into the sensor driver
@@ -159,14 +162,17 @@ void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
         return;
     }
 
+    const uint32_t recv_time_ms = timeStamp_ms;
+
     // rate limiting — share the same gate as writeBodyFrameOdom
-    if (((timeStamp_ms - bodyOdmMeasTime_ms) < frontend->sensorIntervalMin_ms) ||
+    if (((recv_time_ms - bodyOdmMeasTime_ms) < frontend->sensorIntervalMin_ms) ||
         !statesInitialised) {
         return;
     }
 
     // subtract sensor pipeline latency
-    timeStamp_ms -= delay_ms;
+    timeStamp_ms = (recv_time_ms > delay_ms) ? (recv_time_ms - delay_ms) : 0;
+    timeStamp_ms = MAX(timeStamp_ms, imuDataDelayed.time_ms);
 
     bodyOdmDataNew.body_offset = posOffset.toftype();
     bodyOdmDataNew.vel         = vel.toftype();
@@ -174,7 +180,7 @@ void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
     bodyOdmDataNew.velErr      = velErr;
     bodyOdmDataNew.time_ms     = timeStamp_ms;
 
-    bodyOdmMeasTime_ms = timeStamp_ms;
+    bodyOdmMeasTime_ms = recv_time_ms;
 
     storedBodyOdm.push(bodyOdmDataNew);
 #endif // EK3_FEATURE_BODY_ODOM

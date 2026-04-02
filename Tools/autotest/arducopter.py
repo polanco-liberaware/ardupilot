@@ -3896,6 +3896,66 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.reboot_sitl()
 
+    def ODOMETRYBodyTwistContract(self):
+        """Validate explicit ODOMETRY body-twist contract and ambiguous-packet rejection."""
+        self.context_push()
+        self.context_collect('STATUSTEXT')
+        self.set_parameters({
+            "AHRS_EKF_TYPE": 3,
+            "EK3_ENABLE": 1,
+            "VISO_TYPE": 1,
+            "VISO_DELAY_MS": 0,
+            "VISO_QUAL_MIN": 0,
+            "EK3_SRC1_POSXY": 0,
+            "EK3_SRC1_VELXY": 6,
+            "EK3_SRC1_POSZ": 1,
+            "EK3_SRC1_VELZ": 0,
+            "EK3_SRC1_YAW": 0,
+            "SIM_GPS1_ENABLE": 0,
+        })
+        self.reboot_sitl()
+
+        def send_odometry(estimator_type, pose_covariance0, rollspeed=0.01, pitchspeed=0.02, yawspeed=0.03):
+            self.mav.mav.odometry_send(
+                int(time.time() * 1.0e6),
+                mavutil.mavlink.MAV_FRAME_LOCAL_FRD,
+                mavutil.mavlink.MAV_FRAME_BODY_FRD,
+                0.0, 0.0, 0.0,
+                [1.0, 0.0, 0.0, 0.0],
+                0.5, 0.1, 0.0,
+                rollspeed, pitchspeed, yawspeed,
+                [pose_covariance0] + [0.0] * 20,
+                [float("nan")] * 21,
+                0,
+                estimator_type,
+                80
+            )
+
+        self.delay_sim_time(2)
+        for _ in range(20):
+            send_odometry(mavutil.mavlink.MAV_ESTIMATOR_TYPE_UNKNOWN, float("nan"))
+            self.delay_sim_time(0.1)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        self.progress("Checking for VISBV in onboard log")
+        found_visbv = False
+        while True:
+            m = dfreader.recv_match(type='VISBV')
+            if m is None:
+                break
+            found_visbv = True
+            break
+        if not found_visbv:
+            raise NotAchievedException("Did not find VISBV after explicit body-twist ODOMETRY")
+
+        for _ in range(5):
+            send_odometry(mavutil.mavlink.MAV_ESTIMATOR_TYPE_UNKNOWN, 0.01)
+            self.delay_sim_time(0.1)
+
+        self.wait_statustext("ODOMETRY body-twist contract rejected", check_context=True, timeout=20)
+        self.context_pop()
+        self.reboot_sitl()
+
         self.progress("Making sure we now get RANGEFINDER messages")
         m = self.assert_receive_message('RANGEFINDER', timeout=10)
 
@@ -10820,6 +10880,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
              self.BaseLoggingRates,
              self.BodyFrameOdom,
              self.GPSViconSwitching,
+             self.ODOMETRYBodyTwistContract,
         ])
         return ret
 

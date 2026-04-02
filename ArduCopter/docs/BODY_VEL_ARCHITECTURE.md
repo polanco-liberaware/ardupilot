@@ -105,7 +105,7 @@ applied**, and **whether that transform is considered safe to keep**.
 | Step | Function / data | Frame in | Math / transform | Frame out | Keep? | Why |
 |------|------------------|----------|------------------|-----------|-------|-----|
 | 1 | RIO radar / MAVLink `ODOMETRY` | Body FRD velocity, body angular rate | None | Body FRD | Yes | This is the clean physical measurement we trust |
-| 2 | `GCS_MAVLINK::handle_odometry()` | Body FRD | **RIO branch:** no body->NED rotation; ignore pose/quaternion for this route | Body FRD | Yes | Prevents early world-frame leakage |
+| 2 | `GCS_MAVLINK::handle_odometry()` | Body FRD | **Plan B branch:** explicit ArduPilot body-twist contract; no body->NED rotation; reject ambiguous pose+twsit packets | Body FRD | Yes | Prevents early world-frame leakage without relying on heuristics |
 | 3 | `AP_VisualOdom::handle_body_frame_velocity_estimate()` | Body FRD | No frame change; only enable/dispatch logic | Body FRD | Yes | Pure transport/front-end step |
 | 4 | `AP_VisualOdom_MAV::handle_body_frame_velocity_estimate()` | Body FRD | No frame change; only quality, delay, noise, and offset handling | Body FRD | Yes | Still measurement-side bookkeeping |
 | 5 | `AP_AHRS::writeBodyFrameVel()` | Body FRD | No frame change; thin bridge into EKF3 | Body FRD | Yes | Pure transport step |
@@ -135,13 +135,91 @@ Critical consistency points:
 - do not feed body-frame data into `writeExtNavVelData()`
 - do not synthesize `delPos = vel * dt` just to reuse `writeBodyFrameOdom()`
 - do not accidentally inject pose/quaternion into the RIO twist-only route
-- keep the new route opt-in through message semantics, not by changing all ODOMETRY behavior
+- keep the new route opt-in through explicit message contract semantics, not by changing all `ODOMETRY` behavior
 
 Why this transport is preferred over a new `VISO_VEL_FRAME` parameter:
 - `ODOMETRY` already carries frame metadata
 - `ODOMETRY` already carries body angular rates
 - this avoids depending on a new user-facing FC parameter
 - this avoids assuming Mission Planner will expose new parameters
+
+### 3.1.1 Plan B: Explicit ArduPilot `ODOMETRY` Contract
+
+The original implementation used a heuristic:
+
+- `frame_id = MAV_FRAME_LOCAL_FRD`
+- `child_frame_id = MAV_FRAME_BODY_FRD`
+- all three angular-rate fields finite
+
+That heuristic is not a clean wire contract because MAVLink `ODOMETRY` legitimately allows a
+sender to provide:
+
+- valid pose
+- valid twist
+- valid angular rates
+
+at the same time.
+
+For Plan B, the body-twist route becomes an **explicit ArduPilot-local contract over existing
+`ODOMETRY`**, with no new user-facing flight-controller parameter and no immediate MAVLink
+standardization work.
+
+#### Body-twist-only packet contract
+
+A sender that wants ArduPilot to use the direct body-velocity route must send `ODOMETRY` with:
+
+- `frame_id = MAV_FRAME_LOCAL_FRD`
+- `child_frame_id = MAV_FRAME_BODY_FRD`
+- `estimator_type = MAV_ESTIMATOR_TYPE_UNKNOWN`
+- finite `vx, vy, vz`
+- finite `rollspeed, pitchspeed, yawspeed`
+- pose explicitly invalid / absent:
+  - `pose_covariance[0] = NaN`
+  - quaternion is ignored by ArduPilot on this route and should not be used to convey pose
+
+Interpretation:
+
+- `estimator_type = UNKNOWN` does **not** mean MAVLink standard has defined a body-twist-only
+  semantic
+- it is an **ArduPilot-documented sender convention**
+- this is deliberately local to the ArduPilot + companion ecosystem for now
+
+#### Legacy `ODOMETRY` remains supported
+
+Any `ODOMETRY` packet that does **not** match the explicit body-twist contract continues down the
+legacy route:
+
+- pose ingestion through `handle_pose_estimate()`
+- FRD velocity rotated by quaternion into NED
+- velocity ingestion through `handle_vision_speed_estimate()`
+
+#### Ambiguous packets must be rejected
+
+ArduPilot should not silently choose one interpretation when a packet looks like both:
+
+- explicit body-twist-only, and
+- valid pose-bearing odometry
+
+If the sender claims the body-twist contract but also provides pose-looking fields, ArduPilot
+should:
+
+- reject the body-twist route for that packet
+- emit a rate-limited warning
+
+This is safer than silently discarding pose.
+
+#### Why this is the best practical fix now
+
+This gives us:
+
+- explicit receiver behavior
+- no new FC parameter
+- no Mission Planner dependency
+- no MAVLink upstream dependency
+- companion-side changes only in the packet contract
+
+The longer-term cleaner option is still a MAVLink-standard body-twist contract, but Plan B avoids
+blocking on that work.
 
 ### 3.2 Expected Frame Ledger — Control Path
 
@@ -201,7 +279,7 @@ FHLD_FILT_HZ    = 5
 FLOW_TYPE       = 0
 ```
 
-Companion-computer message contract:
+Companion-computer message contract (original direct-route form):
 - MAVLink `ODOMETRY`
 - `frame_id = MAV_FRAME_LOCAL_FRD`
 - `child_frame_id = MAV_FRAME_BODY_FRD`
@@ -209,13 +287,100 @@ Companion-computer message contract:
 - `rollspeed, pitchspeed, yawspeed` = body angular rates
 - `quality` = sensor confidence if available
 
+Companion-computer message contract (Plan B explicit form):
+- MAVLink `ODOMETRY`
+- `frame_id = MAV_FRAME_LOCAL_FRD`
+- `child_frame_id = MAV_FRAME_BODY_FRD`
+- `estimator_type = MAV_ESTIMATOR_TYPE_UNKNOWN` (**ArduPilot-local convention**)
+- `vx, vy, vz` = radar body-frame linear velocity
+- `rollspeed, pitchspeed, yawspeed` = body angular rates
+- `pose_covariance[0] = NaN`
+- quaternion invalid/unused by contract for this route
+- `quality` = sensor confidence if available
+
 Important note:
 - the architecture should not assume Mission Planner must expose any new parameter
 - that is why the preferred route avoids a new parameter-based frame switch
+- Mission Planner does not require mandatory protocol changes for Plan B unless we later want UI,
+  packet generation, or packet-inspection support for this contract
 
 ---
 
 ## 5. Learned Lessons
+
+### 5.0 Shared EKF timestamp semantics must be separated
+
+`NavEKF3_core::writeBodyFrameOdom()` and `NavEKF3_core::writeBodyFrameVel()` currently use one
+time value for two different jobs:
+
+1. **acceptance / freshness time**
+2. **delayed fusion-alignment time**
+
+Those jobs are not mathematically identical.
+
+Current pattern:
+
+- gate on raw `timeStamp_ms`
+- subtract `delay_ms`
+- store the delay-subtracted value into both:
+  - `bodyOdmMeasTime_ms`
+  - `bodyOdmDataNew.time_ms`
+
+That conflates:
+
+- "when did I last accept a packet?"
+- "what past time should this measurement be fused against?"
+
+Plan B separates them:
+
+- `bodyOdmMeasTime_ms = t_rx`
+- `bodyOdmDataNew.time_ms = t_fuse`
+
+where:
+
+- `t_rx` = raw receive / measurement timestamp
+- `t_fuse = max(t_rx - delay_ms, imuDataDelayed.time_ms)`
+
+#### Why this does not break EKF math
+
+This change does **not** modify:
+
+- the state vector
+- the body-velocity innovation
+- the Jacobian
+- the Kalman gain
+- the frame transforms inside `FuseBodyVel()`
+
+The actual fusion still uses the delayed measurement selected from `storedBodyOdm` at the EKF
+fusion horizon.
+
+What changes is only the bookkeeping:
+
+- rate limiting and freshness should use **raw packet timing**
+- buffer alignment should use **delayed fusion timing**
+
+#### Why the clamp is correct
+
+`storedBodyOdm.recall(bodyOdmDataDelayed, imuDataDelayed.time_ms)` recalls the newest measurement
+older than the current delayed IMU fusion horizon.
+
+If `t_rx - delay_ms` is older than the oldest usable IMU-backed horizon, then the estimator cannot
+reconstruct that requested past exactly. In that case:
+
+- clamp the measurement timestamp to `imuDataDelayed.time_ms`
+
+This does not change the observation model. It only prevents storing measurements at unreachable
+times.
+
+#### Practical consequence
+
+Separating these timestamps improves:
+
+- rate limiting
+- freshness tests using `bodyOdmMeasTime_ms`
+- robustness when `delay_ms` is large
+
+without changing the mathematical form of body-velocity fusion.
 
 ### 5.1 EKF3 is not a body-frame state estimator
 

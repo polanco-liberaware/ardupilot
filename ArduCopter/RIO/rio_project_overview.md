@@ -22,7 +22,7 @@ The desired end state is:
 For the current project phase, the practical target is a cautious RC-assisted hover using the existing ArduCopter control stack, with RIO supplying the external navigation data that EKF3 fuses.
 
 ## Core Operating Concept
-
+    
 
 ## Control Concept: RC Pilot, FC Control, External Estimates Only
 

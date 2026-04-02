@@ -3891,15 +3891,31 @@ void GCS_MAVLINK::handle_odometry(const mavlink_message_t &msg)
 
     const uint32_t timestamp_ms = correct_offboard_timestamp_usec_to_ms(m.time_usec, PAYLOAD_SIZE(chan, ODOMETRY));
 
-    // If all three angular-rate fields are finite, treat this as a body-twist
-    // message (e.g. RIO radar) and route to the body-frame velocity ingress.
-    // Do NOT call handle_pose_estimate() on this route — there is no valid pose.
-    if (isfinite(m.rollspeed) && isfinite(m.pitchspeed) && isfinite(m.yawspeed)) {
+    const bool has_body_rates = isfinite(m.rollspeed) && isfinite(m.pitchspeed) && isfinite(m.yawspeed);
+    const bool has_body_vel = isfinite(m.vx) && isfinite(m.vy) && isfinite(m.vz);
+    const bool pose_invalid = isnan(m.pose_covariance[0]);
+    const bool body_twist_contract = (m.estimator_type == MAV_ESTIMATOR_TYPE_UNKNOWN) &&
+                                     has_body_vel &&
+                                     has_body_rates &&
+                                     pose_invalid;
+
+    if (body_twist_contract) {
         const Vector3f vel_bf{m.vx, m.vy, m.vz};
         const Vector3f ang_rate{m.rollspeed, m.pitchspeed, m.yawspeed};
         visual_odom->handle_body_frame_velocity_estimate(m.time_usec, timestamp_ms,
                                                          vel_bf, ang_rate,
                                                          m.reset_counter, m.quality);
+        return;
+    }
+
+    if ((m.estimator_type == MAV_ESTIMATOR_TYPE_UNKNOWN) && has_body_rates && !pose_invalid) {
+        static uint32_t last_body_twist_contract_warning_ms;
+        const uint32_t now_ms = AP_HAL::millis();
+        if (now_ms - last_body_twist_contract_warning_ms > 30000U) {
+            last_body_twist_contract_warning_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                          "ODOMETRY body-twist contract rejected: pose fields present");
+        }
         return;
     }
 
