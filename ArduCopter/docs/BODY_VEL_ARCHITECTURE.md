@@ -240,7 +240,8 @@ Pilot interaction:
 - **sticks centered, drone moving:** braking lean angle applied until velocity ~= 0
 - **stick deflection:** pilot lean added directly; braking suspended during stick input
 - **stick released:** braking resumes from the current velocity
-- **EKF velocity invalid:** horizontal correction is skipped and the mode degrades toward AltHold behavior
+- **EKF velocity invalid:** FlowHold resets horizontal PI/filter/braking state, skips horizontal
+  correction, and behaves like AltHold on XY until `flags.horiz_vel` is valid again
 
 Control-side implementation status:
 - `AP_AHRS::get_velocity_body()` now provides the horizontal velocity used by FlowHold
@@ -395,6 +396,11 @@ where:
 - `t_rx` = raw receive / measurement timestamp
 - `t_fuse = max(t_rx - delay_ms, imuDataDelayed.time_ms)`
 
+Guard rails:
+
+- if `delay_ms >= t_rx`, reject the measurement instead of silently treating it as zero-latency
+- only clamp **old but still meaningful** delayed measurements forward to the current IMU horizon
+
 #### Why this does not break EKF math
 
 This change does **not** modify:
@@ -435,6 +441,21 @@ Separating these timestamps improves:
 - robustness when `delay_ms` is large
 
 without changing the mathematical form of body-velocity fusion.
+
+### 5.0.1 Shared body-odometry buffer is exclusive at runtime
+
+`writeBodyFrameVel()` and `writeBodyFrameOdom()` still write into the same EKF3 body-odometry
+buffer (`storedBodyOdm` plus shared freshness bookkeeping).
+
+That means:
+
+- body-twist `ODOMETRY` ingress and `VISION_POSITION_DELTA` ingress are not independent consumers
+- they must not be streamed into the same EKF instance at the same time
+- the runtime now rejects mixed fresh streams and emits a warning instead of silently interleaving
+  them
+
+The exclusivity rule is only about the active fresh source. A clean handover is still possible once
+the previous source has gone stale.
 
 ### 5.1 EKF3 is not a body-frame state estimator
 
@@ -748,6 +769,7 @@ Implement `NavEKF3_core::writeBodyFrameVel(...)`.
 Behavior should mirror `writeBodyFrameOdom()` except for the delta conversion:
 - reject NaN inputs
 - reuse the same update-rate gate
+- reject impossible `delay_ms >= timeStamp_ms` combinations
 - subtract `delay_ms` from the timestamp
 - write directly into `bodyOdmDataNew`
 - push to `storedBodyOdm`
@@ -755,6 +777,7 @@ Behavior should mirror `writeBodyFrameOdom()` except for the delta conversion:
 Mutual-exclusion requirement:
 - `writeBodyFrameVel()` and `writeBodyFrameOdom()` share the same buffer
 - only one body-odometry ingress mode should be active at runtime on this branch
+- reject mixed fresh streams with a warning rather than silently interleaving them
 
 #### I. `libraries/AP_DAL/AP_DAL.h/.cpp` and `libraries/AP_DAL/LogStructure.h`
 
@@ -822,6 +845,8 @@ Semantic note:
 - for this project, that is intentional and desirable
 - it also removes the stale-integrator failure mode where accumulated earth-frame correction could
   rotate into the wrong body axis after yaw changes
+- when `flags.horiz_vel` drops while FlowHold is active, the mode now discards horizontal
+  controller memory and reacquires hold from a clean state once velocity validity returns
 
 ### 9.4 Why FlowHold remains the control mode
 
@@ -875,6 +900,8 @@ Validation should be done in this order:
    - confirm mode entry succeeds with no GPS and no yaw source
    - confirm stick release produces stable body-oriented braking
    - confirm the new body-referenced PI does not introduce oscillation after sustained yaw motion
+   - confirm a temporary loss of `flags.horiz_vel` clears horizontal controller memory and the mode
+     degrades to manual AltHold-like XY behavior until aiding returns
 
 4. **Yaw-drift validation**
    - intentionally allow yaw to drift / remove heading aiding

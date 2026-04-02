@@ -74,6 +74,17 @@ ModeFlowHold::ModeFlowHold(void) : Mode()
     AP_Param::setup_object_defaults(this, var_info);
 }
 
+void ModeFlowHold::reset_flowhold_controller_state()
+{
+    flow_pi_xy.reset_I();
+    flow_pi_xy.reset_filter();
+    flow_filter.reset();
+    limited = false;
+    xy_I.zero();
+    braking = false;
+    last_stick_input_ms = 0;
+}
+
 // flowhold_init - initialise flowhold controller
 bool ModeFlowHold::init(bool ignore_checks)
 {
@@ -94,12 +105,7 @@ bool ModeFlowHold::init(bool ignore_checks)
     flow_filter.set_cutoff_frequency(copter.scheduler.get_loop_rate_hz(), flow_filter_hz.get());
 
     quality_filtered = 0;
-    flow_pi_xy.reset_I();
-    flow_pi_xy.reset_filter();
-    flow_filter.reset();
-    limited = false;
-    xy_I.zero();
-    braking = false;
+    reset_flowhold_controller_state();
     last_stick_input_ms = 0;
 
     flow_pi_xy.set_dt(1.0/copter.scheduler.get_loop_rate_hz());
@@ -245,7 +251,15 @@ void ModeFlowHold::run()
     AltHoldModeState flowhold_state = get_alt_hold_state(target_climb_rate);
 
     // Binary EKF health signal: valid horizontal velocity estimate or not
+    const float previous_quality_filtered = quality_filtered;
     quality_filtered = inertial_nav.get_filter_status().flags.horiz_vel ? 255.0f : 0.0f;
+
+    // FlowHold owns its own horizontal validity gate. If velocity aiding drops
+    // out while the mode is active, discard horizontal controller memory and
+    // degrade to manual AltHold-like lean control until aiding returns.
+    if ((previous_quality_filtered > 0.0f) && (quality_filtered <= 0.0f)) {
+        reset_flowhold_controller_state();
+    }
 
     // Flow Hold State Machine
     switch (flowhold_state) {
@@ -255,11 +269,7 @@ void ModeFlowHold::run()
         copter.attitude_control->reset_rate_controller_I_terms();
         copter.attitude_control->reset_yaw_target_and_rate();
         copter.pos_control->relax_z_controller(0.0f);   // forces throttle output to decay to zero
-        flow_pi_xy.reset_I();
-        flow_pi_xy.reset_filter();
-        flow_filter.reset();
-        xy_I.zero();
-        braking = false;
+        reset_flowhold_controller_state();
         break;
 
     case AltHoldModeState::Takeoff:
@@ -285,11 +295,7 @@ void ModeFlowHold::run()
     case AltHoldModeState::Landed_Pre_Takeoff:
         attitude_control->reset_rate_controller_I_terms_smoothly();
         pos_control->relax_z_controller(0.0f);   // forces throttle output to decay to zero
-        flow_pi_xy.reset_I();
-        flow_pi_xy.reset_filter();
-        flow_filter.reset();
-        xy_I.zero();
-        braking = false;
+        reset_flowhold_controller_state();
         break;
 
     case AltHoldModeState::Flying:

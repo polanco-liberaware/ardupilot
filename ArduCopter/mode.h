@@ -1004,6 +1004,7 @@ private:
     bool flowhold_init(bool ignore_checks);
     void flowhold_run();
     void flowhold_flow_to_angle(Vector2f &angle, bool stick_input);
+    void reset_flowhold_controller_state();
 
     AP_Float flow_max;
     AC_PI_2D flow_pi_xy{0.2f, 0.3f, 3000, 5, 0.0025f};

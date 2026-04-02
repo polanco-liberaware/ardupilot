@@ -4005,7 +4005,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.reboot_sitl()
 
     def FlowHoldBodyFrameController(self):
-        """Validate FlowHold PI/integrator remain body-frame through yaw changes."""
+        """Validate FlowHold PI/integrator remain body-frame through yaw changes and reset after aiding loss."""
         self.set_parameters({
             "AHRS_EKF_TYPE": 3,
             "EK3_ENABLE": 1,
@@ -4090,6 +4090,14 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         stream_body_twist(4.0)
         post_end_us = int(self.get_sim_time() * 1.0e6)
 
+        # Stop aiding long enough for the EKF body-velocity validity gate to drop,
+        # then resume the same body-frame motion. The restarted controller should
+        # reacquire from a clean state instead of reviving the prior integrator.
+        self.delay_sim_time(6.0)
+        reset_window_start_us = int(self.get_sim_time() * 1.0e6)
+        stream_body_twist(1.5)
+        reset_window_end_us = int(self.get_sim_time() * 1.0e6)
+
         self.change_mode("LAND")
         self.wait_disarmed(timeout=120)
 
@@ -4103,6 +4111,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         post_sum_abs_ix = 0.0
         post_sum_abs_iy = 0.0
         post_count = 0
+        reset_sum_abs_ix = 0.0
+        reset_sum_abs_iy = 0.0
+        reset_count = 0
 
         while True:
             m = dfreader.recv_match(type='FHLD')
@@ -4116,22 +4127,31 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 post_sum_abs_ix += abs(m.Ix)
                 post_sum_abs_iy += abs(m.Iy)
                 post_count += 1
+            if reset_window_start_us <= m.TimeUS <= reset_window_end_us:
+                reset_sum_abs_ix += abs(m.Ix)
+                reset_sum_abs_iy += abs(m.Iy)
+                reset_count += 1
 
-        if pre_count < 5 or post_count < 5:
-            raise NotAchievedException("Did not collect enough FHLD samples for pre/post-yaw comparison")
+        if pre_count < 5 or post_count < 5 or reset_count < 5:
+            raise NotAchievedException("Did not collect enough FHLD samples for FlowHold controller comparison")
 
         pre_avg_abs_ix = pre_sum_abs_ix / pre_count
         pre_avg_abs_iy = pre_sum_abs_iy / pre_count
         post_avg_abs_ix = post_sum_abs_ix / post_count
         post_avg_abs_iy = post_sum_abs_iy / post_count
+        reset_avg_abs_ix = reset_sum_abs_ix / reset_count
+        reset_avg_abs_iy = reset_sum_abs_iy / reset_count
 
         self.progress("FlowHold pre-yaw |Ix|=%f |Iy|=%f" % (pre_avg_abs_ix, pre_avg_abs_iy))
         self.progress("FlowHold post-yaw |Ix|=%f |Iy|=%f" % (post_avg_abs_ix, post_avg_abs_iy))
+        self.progress("FlowHold post-reset |Ix|=%f |Iy|=%f" % (reset_avg_abs_ix, reset_avg_abs_iy))
 
         if pre_avg_abs_iy <= max(0.2, pre_avg_abs_ix * 2.0):
             raise NotAchievedException("FlowHold pre-yaw integrator did not build on the forward body axis")
         if post_avg_abs_iy <= max(0.2, post_avg_abs_ix * 2.0):
             raise NotAchievedException("FlowHold post-yaw integrator rotated away from the forward body axis")
+        if reset_avg_abs_iy >= post_avg_abs_iy * 0.75:
+            raise NotAchievedException("FlowHold integrator did not reset after horizontal velocity aiding was lost")
 
     def SplineTerrain(self):
         '''Test Splines and Terrain'''

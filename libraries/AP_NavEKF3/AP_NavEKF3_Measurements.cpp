@@ -112,6 +112,9 @@ void NavEKF3_core::readRangeFinder(void)
 void NavEKF3_core::writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, uint16_t delay_ms, const Vector3f &posOffset)
 {
 #if EK3_FEATURE_BODY_ODOM
+    const uint32_t now_ms = AP_HAL::millis();
+    const bool active_body_odom_source_fresh = (now_ms - bodyOdmMeasTime_ms) < 200U;
+
     // protect against NaN
     if (isnan(quality) || delPos.is_nan() || delAng.is_nan() || isnan(delTime) || posOffset.is_nan()) {
         return;
@@ -125,8 +128,24 @@ void NavEKF3_core::writeBodyFrameOdom(float quality, const Vector3f &delPos, con
         return;
     }
 
+    if (active_body_odom_source_fresh && (activeBodyOdmSource == BodyOdomSource::DIRECT_VEL)) {
+        if (now_ms - lastBodyOdmSourceWarn_ms > 30000U) {
+            lastBodyOdmSourceWarn_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "EKF3 IMU%u body odom rejected: mixed direct/delta sources", (unsigned)imu_index);
+        }
+        return;
+    }
+
+    if (recv_time_ms <= delay_ms) {
+        if (now_ms - lastBodyOdmTimingWarn_ms > 30000U) {
+            lastBodyOdmTimingWarn_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "EKF3 IMU%u body odom rejected: invalid timestamp/delay", (unsigned)imu_index);
+        }
+        return;
+    }
+
     // subtract delay from timestamp
-    timeStamp_ms = (recv_time_ms > delay_ms) ? (recv_time_ms - delay_ms) : 0;
+    timeStamp_ms = recv_time_ms - delay_ms;
     timeStamp_ms = MAX(timeStamp_ms, imuDataDelayed.time_ms);
 
     bodyOdmDataNew.body_offset = posOffset.toftype();
@@ -134,6 +153,7 @@ void NavEKF3_core::writeBodyFrameOdom(float quality, const Vector3f &delPos, con
     bodyOdmDataNew.time_ms = timeStamp_ms;
     bodyOdmDataNew.angRate = (delAng * (1.0/delTime)).toftype();
     bodyOdmMeasTime_ms = recv_time_ms;
+    activeBodyOdmSource = BodyOdomSource::DELTA;
 
     // simple model of accuracy
     // TODO move this calculation outside of EKF into the sensor driver
@@ -157,6 +177,9 @@ void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
                                      uint16_t delay_ms, const Vector3f &posOffset)
 {
 #if EK3_FEATURE_BODY_ODOM
+    const uint32_t now_ms = AP_HAL::millis();
+    const bool active_body_odom_source_fresh = (now_ms - bodyOdmMeasTime_ms) < 200U;
+
     // reject NaN inputs
     if (vel.is_nan() || isnan(velErr) || angRate.is_nan() || posOffset.is_nan()) {
         return;
@@ -170,8 +193,24 @@ void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
         return;
     }
 
+    if (active_body_odom_source_fresh && (activeBodyOdmSource == BodyOdomSource::DELTA)) {
+        if (now_ms - lastBodyOdmSourceWarn_ms > 30000U) {
+            lastBodyOdmSourceWarn_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "EKF3 IMU%u body vel rejected: mixed delta/direct sources", (unsigned)imu_index);
+        }
+        return;
+    }
+
+    if (recv_time_ms <= delay_ms) {
+        if (now_ms - lastBodyOdmTimingWarn_ms > 30000U) {
+            lastBodyOdmTimingWarn_ms = now_ms;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "EKF3 IMU%u body vel rejected: invalid timestamp/delay", (unsigned)imu_index);
+        }
+        return;
+    }
+
     // subtract sensor pipeline latency
-    timeStamp_ms = (recv_time_ms > delay_ms) ? (recv_time_ms - delay_ms) : 0;
+    timeStamp_ms = recv_time_ms - delay_ms;
     timeStamp_ms = MAX(timeStamp_ms, imuDataDelayed.time_ms);
 
     bodyOdmDataNew.body_offset = posOffset.toftype();
@@ -181,6 +220,7 @@ void NavEKF3_core::writeBodyFrameVel(const Vector3f &vel, float velErr,
     bodyOdmDataNew.time_ms     = timeStamp_ms;
 
     bodyOdmMeasTime_ms = recv_time_ms;
+    activeBodyOdmSource = BodyOdomSource::DIRECT_VEL;
 
     storedBodyOdm.push(bodyOdmDataNew);
 #endif // EK3_FEATURE_BODY_ODOM

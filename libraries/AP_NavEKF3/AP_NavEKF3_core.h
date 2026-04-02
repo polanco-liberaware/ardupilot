@@ -291,7 +291,9 @@ public:
      * timeStamp_ms is the timestamp of the last image used to calculate delPos and delAng (msec)
      * delay_ms is the average delay of external nav system measurements relative to inertial measurements
      * posOffset is the XYZ body frame position of the camera focal point (m)
-    */
+     * This path shares a single body-odometry buffer with writeBodyFrameVel() and should not be mixed
+     * with direct body-frame velocity ingress while the other source remains fresh.
+     */
     void writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, uint16_t delay_ms, const Vector3f &posOffset);
     /*
      * Write body-frame velocity directly from a radar or similar sensor (no delta-position conversion).
@@ -301,7 +303,11 @@ public:
      * timeStamp_ms is the timestamp of the measurement (msec)
      * delay_ms is the average sensor pipeline latency relative to inertial measurements
      * posOffset is the XYZ body frame position of the sensor (m)
-    */
+     * The angular rate is logged with the measurement, but the current body-velocity fusion still uses
+     * delayed IMU angular rate for lever-arm correction at fusion time.
+     * This path shares a single body-odometry buffer with writeBodyFrameOdom() and should not be mixed
+     * with delta-position body odometry while the other source remains fresh.
+     */
     void writeBodyFrameVel(const Vector3f &vel, float velErr,
                            const Vector3f &angRate, uint32_t timeStamp_ms,
                            uint16_t delay_ms, const Vector3f &posOffset);
@@ -643,7 +649,13 @@ private:
         Vector3F        vel;        // XYZ velocity measured in body frame (m/s)
         ftype           velErr;     // velocity measurement error 1-std (m/s)
         Vector3F        body_offset;// XYZ position of the velocity sensor in body frame (m)
-        Vector3F        angRate;    // angular rate estimated from odometry (rad/sec)
+        Vector3F        angRate;    // sensor angular rate logged with the observation (rad/sec); body-velocity fusion currently uses delayed IMU rates for lever-arm correction
+    };
+
+    enum class BodyOdomSource : uint8_t {
+        NONE = 0,
+        DELTA = 1,
+        DIRECT_VEL = 2,
     };
 
     struct wheel_odm_elements : EKF_obs_element_t {
@@ -1354,6 +1366,9 @@ private:
     Vector3 innovBodyVel;               // Body velocity XYZ innovations (m/sec)
     uint32_t prevBodyVelFuseTime_ms;    // previous time all body velocity measurement components passed their innovation consistency checks (msec)
     uint32_t bodyOdmMeasTime_ms;        // time body velocity measurements were accepted for input to the data buffer (msec)
+    BodyOdomSource activeBodyOdmSource; // active body-odometry ingress source while data remains fresh
+    uint32_t lastBodyOdmSourceWarn_ms;  // last time a mixed body-odometry source warning was sent (msec)
+    uint32_t lastBodyOdmTimingWarn_ms;  // last time an invalid body-odometry timing warning was sent (msec)
     bool bodyVelFusionDelayed;          // true when body frame velocity fusion has been delayed
     bool bodyVelFusionActive;           // true when body frame velocity fusion is active
 

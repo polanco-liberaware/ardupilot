@@ -372,6 +372,9 @@ void NavEKF3_core::InitialiseVariables()
     ZERO_FARRAY(innovBodyVel);
     prevBodyVelFuseTime_ms = 0;
     bodyOdmMeasTime_ms = 0;
+    activeBodyOdmSource = BodyOdomSource::NONE;
+    lastBodyOdmSourceWarn_ms = 0;
+    lastBodyOdmTimingWarn_ms = 0;
     bodyVelFusionDelayed = false;
     bodyVelFusionActive = false;
 
