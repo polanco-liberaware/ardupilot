@@ -3894,7 +3894,7 @@ void GCS_MAVLINK::handle_odometry(const mavlink_message_t &msg)
     // If all three angular-rate fields are finite, treat this as a body-twist
     // message (e.g. RIO radar) and route to the body-frame velocity ingress.
     // Do NOT call handle_pose_estimate() on this route — there is no valid pose.
-    if (!isnan(m.rollspeed) && !isnan(m.pitchspeed) && !isnan(m.yawspeed)) {
+    if (isfinite(m.rollspeed) && isfinite(m.pitchspeed) && isfinite(m.yawspeed)) {
         const Vector3f vel_bf{m.vx, m.vy, m.vz};
         const Vector3f ang_rate{m.rollspeed, m.pitchspeed, m.yawspeed};
         visual_odom->handle_body_frame_velocity_estimate(m.time_usec, timestamp_ms,
