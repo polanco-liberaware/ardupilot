@@ -812,16 +812,13 @@ Recommended fields:
 Document the EKF-facing log semantics for this branch explicitly.
 
 Planned logging contract:
-- `XKF1.VN/VE/VD` are reused for body-frame velocity only while the **direct** body-frame velocity
-  route is actively being fused by EKF3
-- that remap follows estimator fusion status, **not** the active flight mode or whether FlowHold is
-  currently consuming the estimate
-- in that body-velocity-fusion case:
+- `XKF1.VN/VE/VD` are always reused for body-frame velocity on this branch
+- that remap does **not** depend on estimator fusion status, the active flight mode, or whether
+  FlowHold is currently consuming the estimate
+- the axis contract is always:
   - `VN -> body X (forward)`
   - `VE -> body Y (right)`
   - `VD -> body Z (down)`
-- when the direct body-velocity path is not being fused, `XKF1.VN/VE/VD` retain their normal NED
-  meaning
 - `XKF1.PN/PE/PD` remain NED position outputs in all cases
 - `XKF3` keeps its existing semantics; its velocity innovation fields remain the standard EKF3 NED
   velocity innovations and are **not** reinterpreted as body-frame values
@@ -834,8 +831,8 @@ Planned logging contract:
 Implication for analysis tools:
 - `UAVLogViewer` can continue parsing the log stream without code changes because it reads message
   fields generically by name
-- if this conditional `XKF1` remap is implemented, the viewer metadata/help text for `VN/VE/VD`
-  should be updated so it does not always describe those fields as North/East/Down
+- the viewer metadata/help text for `VN/VE/VD` should be updated so it does not describe those
+  fields as North/East/Down
 
 #### K. `libraries/AP_AHRS/AP_AHRS.h/.cpp`
 
@@ -924,8 +921,7 @@ Validation should be done in this order:
    - verify the RIO `ODOMETRY` route produces body-velocity records, not EXTNAV NED records
    - confirm the pose path is not consumed on this route
    - confirm non-finite angular-rate fields cause message rejection
-   - confirm `XKF1.VN/VE/VD` switch to body `X/Y/Z` only when the direct body-velocity route is
-     actually being fused
+   - confirm `XKF1.VN/VE/VD` always report body `X/Y/Z`
 
 2. **EKF validation**
    - confirm `readyToUseBodyOdm()` conditions are satisfied
