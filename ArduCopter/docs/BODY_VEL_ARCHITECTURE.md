@@ -820,9 +820,14 @@ Planned logging contract:
   - `VN -> body X (forward)`
   - `VE -> body Y (right)`
   - `VD -> body Z (down)`
+- in that same body-velocity-fusion case:
   - `PN -> body X (forward)`
   - `PE -> body Y (right)`
   - `PD -> body Z (down)`
+- when the direct body-velocity path is not being fused, `XKF1.VN/VE/VD` retain their normal NED
+  meaning
+- when the direct body-velocity path is not being fused, `XKF1.PN/PE/PD` retain their normal NED
+  meaning
 - `XKF3` keeps its existing semantics; its velocity innovation fields remain the standard EKF3 NED
   velocity innovations and are **not** reinterpreted as body-frame values
 - `XKF4` also keeps its existing semantics; `SV/SP/SH/...` remain EKF variance / test-ratio summary
@@ -924,8 +929,10 @@ Validation should be done in this order:
    - verify the RIO `ODOMETRY` route produces body-velocity records, not EXTNAV NED records
    - confirm the pose path is not consumed on this route
    - confirm non-finite angular-rate fields cause message rejection
-   - confirm `XKF1.VN/VE/VD` always report body `X/Y/Z`
-   - confirm `XKF1.PN/PE/PD` always report body `X/Y/Z`
+   - confirm `XKF1.VN/VE/VD` switch to body `X/Y/Z` only when the direct body-velocity route is
+     actually being fused
+   - confirm `XKF1.PN/PE/PD` switch to body `X/Y/Z` only when the direct body-velocity route is
+     actually being fused
 
 2. **EKF validation**
    - confirm `readyToUseBodyOdm()` conditions are satisfied
