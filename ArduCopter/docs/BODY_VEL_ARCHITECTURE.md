@@ -813,13 +813,16 @@ Document the EKF-facing log semantics for this branch explicitly.
 
 Planned logging contract:
 - `XKF1.VN/VE/VD` are always reused for body-frame velocity on this branch
+- `XKF1.PN/PE/PD` are also always reused for body-frame position on this branch
 - that remap does **not** depend on estimator fusion status, the active flight mode, or whether
   FlowHold is currently consuming the estimate
 - the axis contract is always:
   - `VN -> body X (forward)`
   - `VE -> body Y (right)`
   - `VD -> body Z (down)`
-- `XKF1.PN/PE/PD` remain NED position outputs in all cases
+  - `PN -> body X (forward)`
+  - `PE -> body Y (right)`
+  - `PD -> body Z (down)`
 - `XKF3` keeps its existing semantics; its velocity innovation fields remain the standard EKF3 NED
   velocity innovations and are **not** reinterpreted as body-frame values
 - `XKF4` also keeps its existing semantics; `SV/SP/SH/...` remain EKF variance / test-ratio summary
@@ -922,6 +925,7 @@ Validation should be done in this order:
    - confirm the pose path is not consumed on this route
    - confirm non-finite angular-rate fields cause message rejection
    - confirm `XKF1.VN/VE/VD` always report body `X/Y/Z`
+   - confirm `XKF1.PN/PE/PD` always report body `X/Y/Z`
 
 2. **EKF validation**
    - confirm `readyToUseBodyOdm()` conditions are satisfied

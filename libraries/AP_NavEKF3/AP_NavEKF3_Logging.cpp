@@ -16,16 +16,14 @@ void NavEKF3_core::Log_Write_XKF1(uint64_t time_us) const
 {
     // Write first EKF packet
     Vector3f euler;
-    Vector2f posNE;
-    float posD;
     Vector3f velBody;
+    Vector3f posBody;
     Vector3f gyroBias;
     float posDownDeriv;
     Location originLLH;
     getEulerAngles(euler);
     getVelBody(velBody);
-    getPosNE(posNE);
-    getPosD(posD);
+    getPosBody(posBody);
     getGyroBias(gyroBias);
     posDownDeriv = getPosDownDerivative();
     if (!getOriginLLH(originLLH)) {
@@ -42,9 +40,9 @@ void NavEKF3_core::Log_Write_XKF1(uint64_t time_us) const
         velE    : (float)(velBody.y), // body Y velocity (right, m/s)
         velD    : (float)(velBody.z), // body Z velocity (down, m/s)
         posD_dot : (float)(posDownDeriv), // first derivative of down position
-        posN    : (float)(posNE.x), // metres North
-        posE    : (float)(posNE.y), // metres East
-        posD    : (float)(posD), // metres Down
+        posN    : (float)(posBody.x), // body X position (forward, m)
+        posE    : (float)(posBody.y), // body Y position (right, m)
+        posD    : (float)(posBody.z), // body Z position (down, m)
         gyrX    : (int16_t)(100*degrees(gyroBias.x)), // cd/sec, displayed as deg/sec due to format string
         gyrY    : (int16_t)(100*degrees(gyroBias.y)), // cd/sec, displayed as deg/sec due to format string
         gyrZ    : (int16_t)(100*degrees(gyroBias.z)), // cd/sec, displayed as deg/sec due to format string

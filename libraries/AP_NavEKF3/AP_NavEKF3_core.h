@@ -161,6 +161,9 @@ public:
     // If false returned, do not use for flight control
     bool getPosD(float &posD) const;
 
+    // return position relative to the public origin rotated into body FRD: x=forward, y=right, z=down
+    void getPosBody(Vector3f &pos) const;
+
     // return NED velocity in m/s
     void getVelNED(Vector3f &vel) const;
 

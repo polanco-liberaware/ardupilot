@@ -320,6 +320,19 @@ bool NavEKF3_core::getPosD(float &posD) const
     return ret;
 }
 
+// return the position of the body frame origin relative to the public origin rotated into body FRD
+void NavEKF3_core::getPosBody(Vector3f &pos) const
+{
+    Vector2f posNE;
+    float posD;
+    getPosNE(posNE);
+    getPosD(posD);
+    pos = Vector3f(posNE.x, posNE.y, posD);
+    Matrix3f Tnb; // rotation from nav to body frame
+    outputDataNew.quat.inverse().rotation_matrix(Tnb);
+    pos = Tnb * pos;
+}
+
 // return the estimated height of body frame origin above ground level
 bool NavEKF3_core::getHAGL(float &HAGL) const
 {

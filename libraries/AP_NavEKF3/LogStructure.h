@@ -69,9 +69,9 @@ struct PACKED log_XKF0 {
 // @Field: VE: Estimated velocity (body Y / right component)
 // @Field: VD: Estimated velocity (body Z / down component)
 // @Field: dPD: Filtered derivative of vertical position (down)
-// @Field: PN: Estimated distance from origin (North component)
-// @Field: PE: Estimated distance from origin (East component)
-// @Field: PD: Estimated distance from origin (Down component)
+// @Field: PN: Estimated position relative to origin (body X / forward component)
+// @Field: PE: Estimated position relative to origin (body Y / right component)
+// @Field: PD: Estimated position relative to origin (body Z / down component)
 // @Field: GX: Estimated gyro bias, X axis
 // @Field: GY: Estimated gyro bias, Y axis
 // @Field: GZ: Estimated gyro bias, Z axis
