@@ -164,6 +164,9 @@ public:
     // return NED velocity in m/s
     void getVelNED(Vector3f &vel) const;
 
+    // return body FRD velocity in m/s: x=forward, y=right, z=down
+    void getVelBody(Vector3f &vel) const;
+
     // return estimate of true airspeed vector in body frame in m/s
     // returns false if estimate is unavailable
     bool getAirSpdVec(Vector3f &vel) const;

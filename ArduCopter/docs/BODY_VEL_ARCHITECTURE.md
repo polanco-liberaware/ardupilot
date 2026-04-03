@@ -807,6 +807,36 @@ Recommended fields:
 - reset counter
 - quality
 
+#### J.1 `libraries/AP_NavEKF3/AP_NavEKF3_Logging.cpp` and `libraries/AP_NavEKF3/LogStructure.h`
+
+Document the EKF-facing log semantics for this branch explicitly.
+
+Planned logging contract:
+- `XKF1.VN/VE/VD` are reused for body-frame velocity only while the **direct** body-frame velocity
+  route is actively being fused by EKF3
+- that remap follows estimator fusion status, **not** the active flight mode or whether FlowHold is
+  currently consuming the estimate
+- in that body-velocity-fusion case:
+  - `VN -> body X (forward)`
+  - `VE -> body Y (right)`
+  - `VD -> body Z (down)`
+- when the direct body-velocity path is not being fused, `XKF1.VN/VE/VD` retain their normal NED
+  meaning
+- `XKF1.PN/PE/PD` remain NED position outputs in all cases
+- `XKF3` keeps its existing semantics; its velocity innovation fields remain the standard EKF3 NED
+  velocity innovations and are **not** reinterpreted as body-frame values
+- `XKF4` also keeps its existing semantics; `SV/SP/SH/...` remain EKF variance / test-ratio summary
+  outputs and are **not** per-axis body-velocity innovation variances
+- `XKFD` is the body-frame fusion diagnostic:
+  - `IX/IY/IZ` are body-frame velocity innovations (`X/Y/Z`)
+  - `IVX/IVY/IVZ` are the corresponding body-frame innovation variances
+
+Implication for analysis tools:
+- `UAVLogViewer` can continue parsing the log stream without code changes because it reads message
+  fields generically by name
+- if this conditional `XKF1` remap is implemented, the viewer metadata/help text for `VN/VE/VD`
+  should be updated so it does not always describe those fields as North/East/Down
+
 #### K. `libraries/AP_AHRS/AP_AHRS.h/.cpp`
 
 Add a canonical estimator-output API:
@@ -894,12 +924,16 @@ Validation should be done in this order:
    - verify the RIO `ODOMETRY` route produces body-velocity records, not EXTNAV NED records
    - confirm the pose path is not consumed on this route
    - confirm non-finite angular-rate fields cause message rejection
+   - confirm `XKF1.VN/VE/VD` switch to body `X/Y/Z` only when the direct body-velocity route is
+     actually being fused
 
 2. **EKF validation**
    - confirm `readyToUseBodyOdm()` conditions are satisfied
    - confirm EKF enters `AID_RELATIVE`
    - confirm `flags.horiz_vel = 1`
    - confirm only one body-odometry ingress path is active
+   - confirm `XKFD.IX/IY/IZ` and `IVX/IVY/IVZ` track the body-frame fusion while `XKF3/XKF4`
+     retain their existing NED / summary semantics
 
 3. **FlowHold validation**
    - confirm mode entry succeeds with no GPS and no yaw source

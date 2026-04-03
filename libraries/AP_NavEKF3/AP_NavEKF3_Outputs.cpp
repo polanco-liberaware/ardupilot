@@ -204,6 +204,15 @@ void NavEKF3_core::getVelNED(Vector3f &vel) const
     vel = (outputDataNew.velocity + velOffsetNED).tofloat();
 }
 
+// return the body FRD velocity of the body frame origin in m/s
+void NavEKF3_core::getVelBody(Vector3f &vel) const
+{
+    getVelNED(vel);
+    Matrix3f Tnb; // rotation from nav to body frame
+    outputDataNew.quat.inverse().rotation_matrix(Tnb);
+    vel = Tnb * vel;
+}
+
 // return estimate of true airspeed vector in body frame in m/s
 // returns false if estimate is unavailable
 bool NavEKF3_core::getAirSpdVec(Vector3f &vel) const

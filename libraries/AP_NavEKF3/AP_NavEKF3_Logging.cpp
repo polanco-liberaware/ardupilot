@@ -18,12 +18,20 @@ void NavEKF3_core::Log_Write_XKF1(uint64_t time_us) const
     Vector3f euler;
     Vector2f posNE;
     float posD;
-    Vector3f velNED;
+    Vector3f logged_vel;
     Vector3f gyroBias;
     float posDownDeriv;
     Location originLLH;
     getEulerAngles(euler);
-    getVelNED(velNED);
+    const bool log_body_velocity =
+        bodyVelFusionActive &&
+        (activeBodyOdmSource == BodyOdomSource::DIRECT_VEL) &&
+        ((imuSampleTime_ms - bodyOdmMeasTime_ms) < 200U);
+    if (log_body_velocity) {
+        getVelBody(logged_vel);
+    } else {
+        getVelNED(logged_vel);
+    }
     getPosNE(posNE);
     getPosD(posD);
     getGyroBias(gyroBias);
@@ -38,9 +46,9 @@ void NavEKF3_core::Log_Write_XKF1(uint64_t time_us) const
         roll    : (int16_t)(100*degrees(euler.x)), // roll angle (centi-deg, displayed as deg due to format string)
         pitch   : (int16_t)(100*degrees(euler.y)), // pitch angle (centi-deg, displayed as deg due to format string)
         yaw     : (uint16_t)wrap_360_cd(100*degrees(euler.z)), // yaw angle (centi-deg, displayed as deg due to format string)
-        velN    : (float)(velNED.x), // velocity North (m/s)
-        velE    : (float)(velNED.y), // velocity East (m/s)
-        velD    : (float)(velNED.z), // velocity Down (m/s)
+        velN    : (float)(logged_vel.x), // velocity North or body X (m/s)
+        velE    : (float)(logged_vel.y), // velocity East or body Y (m/s)
+        velD    : (float)(logged_vel.z), // velocity Down or body Z (m/s)
         posD_dot : (float)(posDownDeriv), // first derivative of down position
         posN    : (float)(posNE.x), // metres North
         posE    : (float)(posNE.y), // metres East

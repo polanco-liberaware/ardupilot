@@ -65,9 +65,9 @@ struct PACKED log_XKF0 {
 // @Field: Roll: Estimated roll
 // @Field: Pitch: Estimated pitch
 // @Field: Yaw: Estimated yaw
-// @Field: VN: Estimated velocity (North component)
-// @Field: VE: Estimated velocity (East component)
-// @Field: VD: Estimated velocity (Down component)
+// @Field: VN: Estimated velocity (North component, or body X while direct body-frame velocity fusion is active)
+// @Field: VE: Estimated velocity (East component, or body Y while direct body-frame velocity fusion is active)
+// @Field: VD: Estimated velocity (Down component, or body Z while direct body-frame velocity fusion is active)
 // @Field: dPD: Filtered derivative of vertical position (down)
 // @Field: PN: Estimated distance from origin (North component)
 // @Field: PE: Estimated distance from origin (East component)
