@@ -28,15 +28,14 @@ void NavEKF3_core::Log_Write_XKF1(uint64_t time_us) const
         ((imuSampleTime_ms - bodyOdmMeasTime_ms) < 200U);
     if (log_body_velocity) {
         getVelBody(logged_vel);
-        getPosBody(logged_pos);
     } else {
-        Vector2f posNE;
-        float posD;
         getVelNED(logged_vel);
-        getPosNE(posNE);
-        getPosD(posD);
-        logged_pos = Vector3f(posNE.x, posNE.y, posD);
     }
+    Vector2f posNE;
+    float posD;
+    getPosNE(posNE);
+    getPosD(posD);
+    logged_pos = Vector3f(posNE.x, posNE.y, posD);
     getGyroBias(gyroBias);
     posDownDeriv = getPosDownDerivative();
     if (!getOriginLLH(originLLH)) {
@@ -49,13 +48,13 @@ void NavEKF3_core::Log_Write_XKF1(uint64_t time_us) const
         roll    : (int16_t)(100*degrees(euler.x)), // roll angle (centi-deg, displayed as deg due to format string)
         pitch   : (int16_t)(100*degrees(euler.y)), // pitch angle (centi-deg, displayed as deg due to format string)
         yaw     : (uint16_t)wrap_360_cd(100*degrees(euler.z)), // yaw angle (centi-deg, displayed as deg due to format string)
-        velN    : (float)(velBody.x), // body X velocity (forward, m/s)
-        velE    : (float)(velBody.y), // body Y velocity (right, m/s)
-        velD    : (float)(velBody.z), // body Z velocity (down, m/s)
+        velN    : (float)(logged_vel.x), // NED velocity, or body X velocity while direct body-velocity fusion is active
+        velE    : (float)(logged_vel.y), // NED velocity, or body Y velocity while direct body-velocity fusion is active
+        velD    : (float)(logged_vel.z), // NED velocity, or body Z velocity while direct body-velocity fusion is active
         posD_dot : (float)(posDownDeriv), // first derivative of down position
-        posN    : (float)(logged_pos.x), // metres North or body X
-        posE    : (float)(logged_pos.y), // metres East or body Y
-        posD    : (float)(logged_pos.z), // metres Down or body Z
+        posN    : (float)(logged_pos.x), // metres North
+        posE    : (float)(logged_pos.y), // metres East
+        posD    : (float)(logged_pos.z), // metres Down
         gyrX    : (int16_t)(100*degrees(gyroBias.x)), // cd/sec, displayed as deg/sec due to format string
         gyrY    : (int16_t)(100*degrees(gyroBias.y)), // cd/sec, displayed as deg/sec due to format string
         gyrZ    : (int16_t)(100*degrees(gyroBias.z)), // cd/sec, displayed as deg/sec due to format string

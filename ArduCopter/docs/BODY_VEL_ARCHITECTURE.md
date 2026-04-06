@@ -811,23 +811,27 @@ Recommended fields:
 
 Document the EKF-facing log semantics for this branch explicitly.
 
-Planned logging contract:
-- `XKF1.VN/VE/VD` are always reused for body-frame velocity on this branch
-- `XKF1.PN/PE/PD` are also always reused for body-frame position on this branch
-- that remap does **not** depend on estimator fusion status, the active flight mode, or whether
-  FlowHold is currently consuming the estimate
-- the axis contract is always:
+Current branch logging contract:
+- `VISBV.VX/VY/VZ` log body-frame linear velocity in **FRD**
+  - `+VX` = forward
+  - `+VY` = right
+  - `+VZ` = down
+- `VISBV.WX/WY/WZ` log body-frame angular rates
+- `VISP.PX/PY/PZ` log external pose in local **NED / LOCAL_FRD-style** coordinates
+  - `+PX` = North / local X
+  - `+PY` = East / local Y
+  - `+PZ` = Down / local Z
+- `VISP.R/P/Y` are the pose-message Euler angles; in the current prototype sender they are
+  placeholder zeros and should **not** be interpreted as a valid yaw source
+- `XKF1.PN/PE/PD` now stay in normal NED coordinates on this branch
+- `XKF1.VN/VE/VD` are conditional
+  - when direct body-velocity fusion is active and fresh, they log body `X/Y/Z`
+  - otherwise they retain their normal NED meaning
+- in the direct-body-velocity case, the axis contract is:
   - `VN -> body X (forward)`
   - `VE -> body Y (right)`
   - `VD -> body Z (down)`
-- in that same body-velocity-fusion case:
-  - `PN -> body X (forward)`
-  - `PE -> body Y (right)`
-  - `PD -> body Z (down)`
-- when the direct body-velocity path is not being fused, `XKF1.VN/VE/VD` retain their normal NED
-  meaning
-- when the direct body-velocity path is not being fused, `XKF1.PN/PE/PD` retain their normal NED
-  meaning
+- `VISBV` remains the most direct body-velocity log for transport validation
 - `XKF3` keeps its existing semantics; its velocity innovation fields remain the standard EKF3 NED
   velocity innovations and are **not** reinterpreted as body-frame values
 - `XKF4` also keeps its existing semantics; `SV/SP/SH/...` remain EKF variance / test-ratio summary
@@ -920,6 +924,12 @@ Notes:
 - no pose source is required
 - no external yaw source is required
 - recommended default: `EK3_SRC1_VELZ = 0`
+- if a prototype also sends `VISION_POSITION_ESTIMATE` with placeholder zero roll/pitch/yaw, that
+  pose path is only safe while `EK3_SRC1_YAW = 0`; enabling EXTNAV yaw without replacing the
+  placeholder attitude would fuse a false yaw source
+- `VISO_DELAY_MS` is only the sensor/transport latency knob; it does **not** replace correct
+  timestamp-domain handling. If the sender already pre-converts timestamps into FC boot time and
+  ArduPilot still runs offboard jitter correction, timing can be corrected twice
 
 ### 9.6 Validation plan
 
@@ -966,3 +976,42 @@ This patch does not attempt to:
 - preserve every existing `ODOMETRY` user for the RIO testing branch
 
 That keeps the implementation aligned with the actual test objective.
+
+---
+
+## 10. ODOMETRY Touchpoints
+
+Use this list when you want to track where MAVLink `ODOMETRY` is parsed, bridged, fused, logged,
+tested, or generated in ArduPilot.
+
+### 10.1 Runtime consumers
+
+| File | Role |
+|------|------|
+| `libraries/GCS_MAVLink/GCS_Common.cpp` | Decodes MAVLink `ODOMETRY` and splits the body-twist contract from the legacy pose/NED path. |
+| `libraries/AP_VisualOdom/AP_VisualOdom.h` | Frontend API for routing body-frame odometry into the estimator. |
+| `libraries/AP_VisualOdom/AP_VisualOdom_MAV.cpp` | MAV backend that forwards `ODOMETRY`-derived body velocity to AHRS/EKF. |
+| `libraries/AP_AHRS/AP_AHRS.h` | Declares the AHRS bridge methods used by visual odometry and EKF3. |
+| `libraries/AP_AHRS/AP_AHRS.cpp` | Forwards body-frame odometry and body velocity into EKF3. |
+| `libraries/AP_NavEKF3/AP_NavEKF3.h` | Declares EKF3 body-odometry ingress methods. |
+| `libraries/AP_NavEKF3/AP_NavEKF3.cpp` | Forwards body-odometry data to each EKF3 core and DAL logging. |
+| `libraries/AP_NavEKF3/AP_NavEKF3_core.h` | Declares the body-odometry buffer, source selection, and fusion entry points. |
+| `libraries/AP_NavEKF3/AP_NavEKF3_Measurements.cpp` | Stores body-twist measurements for EKF3 fusion. |
+| `libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp` | Fuses the body-odometry measurements in `FuseBodyVel()` / `SelectBodyOdomFusion()`. |
+| `libraries/AP_DAL/AP_DAL.cpp` | Replays and logs body-odometry data for EKF3. |
+| `libraries/AP_DAL/LogStructure.h` | Defines the replay/log structure for body-odometry records. |
+
+### 10.2 Simulation and tests
+
+| File | Role |
+|------|------|
+| `libraries/SITL/SIM_Vicon.cpp` | Synthesizes and emits MAVLink `ODOMETRY` in SITL. |
+| `libraries/SITL/SIM_Vicon.h` | Declares the SITL Vicon/odometry sender types. |
+| `libraries/SITL/SITL.cpp` | Exposes the SITL bitmask that enables `ODOMETRY` output. |
+| `Tools/autotest/arducopter.py` | Sends `ODOMETRY` in regression tests and checks the body-twist contract. |
+
+### 10.3 Definition note
+
+The MAVLink schema for `ODOMETRY` lives in `modules/mavlink/message_definitions/v1.0/common.xml`.
+That file defines the message; the table above tracks the ArduPilot-side code that consumes or
+produces it.
