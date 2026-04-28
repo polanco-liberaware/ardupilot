@@ -3919,9 +3919,13 @@ static bool rio_covariance_is_valid(const float covariance[6])
            covariance[5] >= 0.0f;
 }
 
-static float rio_covariance_upper_triangle_to_sigma(const float covariance[6])
+static Matrix3f rio_covariance_upper_triangle_to_matrix(const float covariance[6])
 {
-    return sqrtf(MAX(MAX(covariance[0], covariance[3]), covariance[5]));
+    return Matrix3f{
+        covariance[0], covariance[1], covariance[2],
+        covariance[1], covariance[3], covariance[4],
+        covariance[2], covariance[4], covariance[5]
+    };
 }
 
 static bool rio_nav_state_is_valid(const mavlink_rio_nav_state_t &m)
@@ -3978,20 +3982,132 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
     }
 
     Quaternion q{m.q[0], m.q[1], m.q[2], m.q[3]};
-    const uint32_t timestamp_ms = correct_offboard_timestamp_usec_to_ms(m.time_usec, PAYLOAD_SIZE(chan, RIO_NAV_STATE));
-    const float posErr = rio_covariance_upper_triangle_to_sigma(m.position_covariance);
-    const float velErr = constrain_float(rio_covariance_upper_triangle_to_sigma(m.velocity_covariance),
-                                         visual_odom->get_vel_noise(),
-                                         100.0f);
-    const float angErr = rio_covariance_upper_triangle_to_sigma(m.attitude_covariance);
+    // RIO time_usec is already carried in the FC boot-time domain, so for this
+    // path we use the packet timestamp directly instead of the generic
+    // offboard lag-correction helper.
+    const uint32_t timestamp_ms = uint32_t(m.time_usec / 1000ULL);
+    const uint32_t now_ms = AP_HAL::millis();
+    const uint16_t effective_delay_ms = (timestamp_ms <= now_ms) ? MIN<uint32_t>(now_ms - timestamp_ms, uint32_t(UINT16_MAX)) : 0;
     const bool consume = (m.quality >= visual_odom->get_quality_min());
 
+
+
+    const Matrix3f position_covariance = rio_covariance_upper_triangle_to_matrix(m.position_covariance);
+    const Matrix3f velocity_covariance_body = rio_covariance_upper_triangle_to_matrix(m.velocity_covariance);
+    const Matrix3f attitude_covariance = rio_covariance_upper_triangle_to_matrix(m.attitude_covariance);
+    Vector3f vel{m.vx, m.vy, m.vz};
+    vel = q * vel;
+    Matrix3f body_to_nav;
+    q.rotation_matrix(body_to_nav);
+    const Matrix3f velocity_covariance = body_to_nav * velocity_covariance_body * body_to_nav.transposed();
+
 #if HAL_LOGGING_ENABLED
+    const uint8_t ignored = (uint8_t)!consume;
+    const struct log_RIOPosition pkt_riopose {
+        LOG_PACKET_HEADER_INIT(LOG_RIOPOS_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : m.time_usec,
+        time_ms         : timestamp_ms,
+        pos_x           : m.x,
+        pos_y           : m.y,
+        pos_z           : m.z,
+        reset_counter   : m.reset_counter,
+        ignored         : ignored,
+        quality         : m.quality
+    };
+
+
+    const struct log_RIOAttitude pkt_rioatt {
+        LOG_PACKET_HEADER_INIT(LOG_RIOATT_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : m.time_usec,
+        time_ms         : timestamp_ms,
+        quat_w          : q.q1,
+        quat_x          : q.q2,
+        quat_y          : q.q3,
+        quat_z          : q.q4,
+        reset_counter   : m.reset_counter,
+        ignored         : ignored,
+        quality         : m.quality
+    };
+
+
+    const struct log_RIOVelocity pkt_riovel {
+        LOG_PACKET_HEADER_INIT(LOG_RIOVEL_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : m.time_usec,
+        time_ms         : timestamp_ms,
+        vel_x           : m.vx,
+        vel_y           : m.vy,
+        vel_z           : m.vz,
+        reset_counter   : m.reset_counter,
+        ignored         : ignored,
+        quality         : m.quality
+    };
+
+
+    const struct log_RIOPosCov pkt_rioposcov {
+        LOG_PACKET_HEADER_INIT(LOG_RIOPOSCOV_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : m.time_usec,
+        time_ms         : timestamp_ms,
+        pos_cov_xx      : position_covariance.a.x,
+        pos_cov_xy      : position_covariance.a.y,
+        pos_cov_xz      : position_covariance.a.z,
+        pos_cov_yy      : position_covariance.b.y,
+        pos_cov_yz      : position_covariance.b.z,
+        pos_cov_zz      : position_covariance.c.z,
+        reset_counter   : m.reset_counter,
+        ignored         : ignored,
+        quality         : m.quality
+    };
+
+
+    const struct log_RIOVelCov pkt_riovelcov {
+        LOG_PACKET_HEADER_INIT(LOG_RIOVELCOV_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : m.time_usec,
+        time_ms         : timestamp_ms,
+        vel_cov_xx      : velocity_covariance_body.a.x,
+        vel_cov_xy      : velocity_covariance_body.a.y,
+        vel_cov_xz      : velocity_covariance_body.a.z,
+        vel_cov_yy      : velocity_covariance_body.b.y,
+        vel_cov_yz      : velocity_covariance_body.b.z,
+        vel_cov_zz      : velocity_covariance_body.c.z,
+        reset_counter   : m.reset_counter,
+        ignored         : ignored,
+        quality         : m.quality
+    };
+
+
+    const struct log_RIOAttCov pkt_rioattcov {
+        LOG_PACKET_HEADER_INIT(LOG_RIOATTCOV_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : m.time_usec,
+        time_ms         : timestamp_ms,
+        att_cov_xx      : attitude_covariance.a.x,
+        att_cov_xy      : attitude_covariance.a.y,
+        att_cov_xz      : attitude_covariance.a.z,
+        att_cov_yy      : attitude_covariance.b.y,
+        att_cov_yz      : attitude_covariance.b.z,
+        att_cov_zz      : attitude_covariance.c.z,
+        reset_counter   : m.reset_counter,
+        ignored         : ignored,
+        quality         : m.quality
+    };
+    /* write logs in requested order: attitude, velocity, position, att-cov, vel-cov, pos-cov, status */
+    AP::logger().WriteBlock(&pkt_rioatt, sizeof(log_RIOAttitude));
+    AP::logger().WriteBlock(&pkt_riovel, sizeof(log_RIOVelocity));
+    AP::logger().WriteBlock(&pkt_riopose, sizeof(log_RIOPosition));
+    AP::logger().WriteBlock(&pkt_rioattcov, sizeof(log_RIOAttCov));
+    AP::logger().WriteBlock(&pkt_riovelcov, sizeof(log_RIOVelCov));
+    AP::logger().WriteBlock(&pkt_rioposcov, sizeof(log_RIOPosCov));
     const struct log_RIOStatus pkt_riostat {
         LOG_PACKET_HEADER_INIT(LOG_RIOSTATUS_MSG),
         time_us          : AP_HAL::micros64(),
         remote_time_us   : m.time_usec,
         time_ms          : timestamp_ms,
+        delay_ms         : effective_delay_ms,
         reset_counter    : m.reset_counter,
         quality          : m.quality,
         health_state     : m.health_state,
@@ -4013,29 +4129,14 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
         return;
     }
 
-    visual_odom->handle_pose_estimate(m.time_usec, timestamp_ms, m.x, m.y, m.z, q, posErr, angErr, m.reset_counter, m.quality);
-
-    Vector3f vel{m.vx, m.vy, m.vz};
-    vel = q * vel;
-
-#if HAL_LOGGING_ENABLED
-    const struct log_VisualVelocity pkt_visualvel {
-        LOG_PACKET_HEADER_INIT(LOG_VISUALVEL_MSG),
-        time_us         : AP_HAL::micros64(),
-        remote_time_us  : m.time_usec,
-        time_ms         : timestamp_ms,
-        vel_x           : vel.x,
-        vel_y           : vel.y,
-        vel_z           : vel.z,
-        vel_err         : velErr,
-        reset_counter   : m.reset_counter,
-        ignored         : (uint8_t)!consume,
-        quality         : m.quality
-    };
-    AP::logger().WriteBlock(&pkt_visualvel, sizeof(log_VisualVelocity));
-#endif
-
-    AP::ahrs().writeExtNavVelData(vel, velErr, timestamp_ms, visual_odom->get_delay_ms());
+    AP::ahrs().writeRioNavData(Vector3f{m.x, m.y, m.z},
+                               q,
+                               position_covariance,
+                               vel,
+                               velocity_covariance,
+                               attitude_covariance,
+                               timestamp_ms,
+                               m.reset_counter);
 }
 
 // there are several messages which all have identical fields in them.
