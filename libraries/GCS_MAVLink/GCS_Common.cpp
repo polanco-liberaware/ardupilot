@@ -3907,6 +3907,137 @@ void GCS_MAVLINK::handle_odometry(const mavlink_message_t &msg)
     visual_odom->handle_vision_speed_estimate(m.time_usec, timestamp_ms, vel, m.reset_counter, m.quality);
 }
 
+static bool rio_covariance_is_valid(const float covariance[6])
+{
+    for (uint8_t i = 0; i < 6; i++) {
+        if (!isfinite(covariance[i])) {
+            return false;
+        }
+    }
+    return covariance[0] >= 0.0f &&
+           covariance[3] >= 0.0f &&
+           covariance[5] >= 0.0f;
+}
+
+static float rio_covariance_upper_triangle_to_sigma(const float covariance[6])
+{
+    return sqrtf(MAX(MAX(covariance[0], covariance[3]), covariance[5]));
+}
+
+static bool rio_nav_state_is_valid(const mavlink_rio_nav_state_t &m)
+{
+    if (!isfinite(m.x) || !isfinite(m.y) || !isfinite(m.z) ||
+        !isfinite(m.vx) || !isfinite(m.vy) || !isfinite(m.vz) ||
+        !isfinite(m.condition_number) || !isfinite(m.radar_age_sec)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < 4; i++) {
+        if (!isfinite(m.q[i])) {
+            return false;
+        }
+    }
+
+    for (uint8_t i = 0; i < 3; i++) {
+        if (!isfinite(m.sigma_radar[i])) {
+            return false;
+        }
+    }
+
+    if (!rio_covariance_is_valid(m.position_covariance) ||
+        !rio_covariance_is_valid(m.velocity_covariance) ||
+        !rio_covariance_is_valid(m.attitude_covariance)) {
+        return false;
+    }
+
+    Quaternion q{m.q[0], m.q[1], m.q[2], m.q[3]};
+    if (q.is_zero() || !q.is_unit_length()) {
+        return false;
+    }
+
+    return m.quality >= -1 && m.quality <= 100;
+}
+
+void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
+{
+    AP_VisualOdom *visual_odom = AP::visualodom();
+    if (visual_odom == nullptr) {
+        return;
+    }
+
+    mavlink_rio_nav_state_t m;
+    mavlink_msg_rio_nav_state_decode(&msg, &m);
+
+    if (m.frame_id != MAV_FRAME_LOCAL_FRD ||
+        m.child_frame_id != MAV_FRAME_BODY_FRD) {
+        return;
+    }
+
+    if (!rio_nav_state_is_valid(m)) {
+        return;
+    }
+
+    Quaternion q{m.q[0], m.q[1], m.q[2], m.q[3]};
+    const uint32_t timestamp_ms = correct_offboard_timestamp_usec_to_ms(m.time_usec, PAYLOAD_SIZE(chan, RIO_NAV_STATE));
+    const float posErr = rio_covariance_upper_triangle_to_sigma(m.position_covariance);
+    const float velErr = constrain_float(rio_covariance_upper_triangle_to_sigma(m.velocity_covariance),
+                                         visual_odom->get_vel_noise(),
+                                         100.0f);
+    const float angErr = rio_covariance_upper_triangle_to_sigma(m.attitude_covariance);
+    const bool consume = (m.quality >= visual_odom->get_quality_min());
+
+#if HAL_LOGGING_ENABLED
+    const struct log_RIOStatus pkt_riostat {
+        LOG_PACKET_HEADER_INIT(LOG_RIOSTATUS_MSG),
+        time_us          : AP_HAL::micros64(),
+        remote_time_us   : m.time_usec,
+        time_ms          : timestamp_ms,
+        reset_counter    : m.reset_counter,
+        quality          : m.quality,
+        health_state     : m.health_state,
+        health_reason    : m.health_reason,
+        status_flags     : m.status_flags,
+        rejection_reason : m.rejection_reason,
+        raw_point_count  : m.raw_point_count,
+        valid_point_count: m.valid_point_count,
+        condition_number : m.condition_number,
+        sigma_radar_x    : m.sigma_radar[0],
+        sigma_radar_y    : m.sigma_radar[1],
+        sigma_radar_z    : m.sigma_radar[2],
+        radar_age_sec    : m.radar_age_sec
+    };
+    AP::logger().WriteBlock(&pkt_riostat, sizeof(log_RIOStatus));
+#endif
+
+    if (!consume) {
+        return;
+    }
+
+    visual_odom->handle_pose_estimate(m.time_usec, timestamp_ms, m.x, m.y, m.z, q, posErr, angErr, m.reset_counter, m.quality);
+
+    Vector3f vel{m.vx, m.vy, m.vz};
+    vel = q * vel;
+
+#if HAL_LOGGING_ENABLED
+    const struct log_VisualVelocity pkt_visualvel {
+        LOG_PACKET_HEADER_INIT(LOG_VISUALVEL_MSG),
+        time_us         : AP_HAL::micros64(),
+        remote_time_us  : m.time_usec,
+        time_ms         : timestamp_ms,
+        vel_x           : vel.x,
+        vel_y           : vel.y,
+        vel_z           : vel.z,
+        vel_err         : velErr,
+        reset_counter   : m.reset_counter,
+        ignored         : (uint8_t)!consume,
+        quality         : m.quality
+    };
+    AP::logger().WriteBlock(&pkt_visualvel, sizeof(log_VisualVelocity));
+#endif
+
+    AP::ahrs().writeExtNavVelData(vel, velErr, timestamp_ms, visual_odom->get_delay_ms());
+}
+
 // there are several messages which all have identical fields in them.
 // This function provides common handling for the data contained in
 // these packets
@@ -4381,6 +4512,10 @@ void GCS_MAVLINK::handle_message(const mavlink_message_t &msg)
 
     case MAVLINK_MSG_ID_ODOMETRY:
         handle_odometry(msg);
+        break;
+
+    case MAVLINK_MSG_ID_RIO_NAV_STATE:
+        handle_rio_nav_state(msg);
         break;
 
     case MAVLINK_MSG_ID_ATT_POS_MOCAP:

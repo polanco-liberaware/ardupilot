@@ -6,7 +6,8 @@
 #define LOG_IDS_FROM_VISUALODOM \
     LOG_VISUALODOM_MSG, \
     LOG_VISUALPOS_MSG, \
-    LOG_VISUALVEL_MSG
+    LOG_VISUALVEL_MSG, \
+    LOG_RIOSTATUS_MSG
 
 // @LoggerMessage: VISO
 // @Description: Visual Odometry
@@ -92,6 +93,44 @@ struct PACKED log_VisualVelocity {
     int8_t quality;
 };
 
+// @LoggerMessage: RIOS
+// @Description: Radar inertial navigation status
+// @Field: TimeUS: System time
+// @Field: RTimeUS: Remote system time
+// @Field: CTimeMS: Corrected system time
+// @Field: Rst: Reset counter
+// @Field: Q: Quality
+// @Field: HS: Health state
+// @Field: HR: Health reason
+// @Field: Flags: Machine-readable status bitmask
+// @Field: RJ: Last radar-estimator rejection reason
+// @Field: Raw: Raw radar detections
+// @Field: Valid: Detections accepted by the solver
+// @Field: Cond: Solver geometry quality
+// @Field: SigR0: Radar ego-velocity 1-sigma X
+// @Field: SigR1: Radar ego-velocity 1-sigma Y
+// @Field: SigR2: Radar ego-velocity 1-sigma Z
+// @Field: RAge: Age of last accepted radar update
+struct PACKED log_RIOStatus {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    uint64_t remote_time_us;
+    uint32_t time_ms;
+    uint8_t reset_counter;
+    int8_t quality;
+    uint8_t health_state;
+    uint8_t health_reason;
+    uint32_t status_flags;
+    uint8_t rejection_reason;
+    uint16_t raw_point_count;
+    uint16_t valid_point_count;
+    float condition_number;
+    float sigma_radar_x;
+    float sigma_radar_y;
+    float sigma_radar_z;
+    float radar_age_sec;
+};
+
 #if HAL_VISUALODOM_ENABLED
 #define LOG_STRUCTURE_FROM_VISUALODOM \
     { LOG_VISUALODOM_MSG, sizeof(log_VisualOdom), \
@@ -99,7 +138,9 @@ struct PACKED log_VisualVelocity {
     { LOG_VISUALPOS_MSG, sizeof(log_VisualPosition), \
       "VISP", "QQIffffffffBBb", "TimeUS,RTimeUS,CTimeMS,PX,PY,PZ,R,P,Y,PErr,AErr,Rst,Ign,Q", "sssmmmddhmd--%", "FFC00000000--0" }, \
     { LOG_VISUALVEL_MSG, sizeof(log_VisualVelocity), \
-      "VISV", "QQIffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,VErr,Rst,Ign,Q", "sssnnnn--%", "FFC0000--0" },
+      "VISV", "QQIffffBBb", "TimeUS,RTimeUS,CTimeMS,VX,VY,VZ,VErr,Rst,Ign,Q", "sssnnnn--%", "FFC0000--0" }, \
+    { LOG_RIOSTATUS_MSG, sizeof(log_RIOStatus), \
+      "RIOS", "QQIBbBBIBHHfffff", "TimeUS,RtUS,CtMS,Rst,Q,HS,HR,Flg,RJ,Raw,Vld,Cnd,SR0,SR1,SR2,Age", "sss-------------", "FFC-------------", true },
 #else
 #define LOG_STRUCTURE_FROM_VISUALODOM
 #endif
