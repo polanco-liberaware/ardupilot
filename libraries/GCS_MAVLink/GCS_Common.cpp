@@ -3965,10 +3965,6 @@ static bool rio_nav_state_is_valid(const mavlink_rio_nav_state_t &m)
 void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
 {
     AP_VisualOdom *visual_odom = AP::visualodom();
-    if (visual_odom == nullptr) {
-        return;
-    }
-
     mavlink_rio_nav_state_t m;
     mavlink_msg_rio_nav_state_decode(&msg, &m);
 
@@ -3988,7 +3984,7 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
     const uint32_t timestamp_ms = uint32_t(m.time_usec / 1000ULL);
     const uint32_t now_ms = AP_HAL::millis();
     const uint16_t effective_delay_ms = (timestamp_ms <= now_ms) ? MIN<uint32_t>(now_ms - timestamp_ms, uint32_t(UINT16_MAX)) : 0;
-    const bool consume = (m.quality >= visual_odom->get_quality_min());
+    const bool consume = (visual_odom != nullptr) && (m.quality >= visual_odom->get_quality_min());
     // DataFlash logs below intentionally preserve the packet content as received
     // from the CC: position in LOCAL_FRD, quaternion body->LOCAL_FRD, velocity in
     // BODY_FRD, position covariance in LOCAL_FRD, velocity covariance in BODY_FRD,
@@ -3996,14 +3992,6 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
     const Matrix3f position_covariance_local = rio_covariance_upper_triangle_to_matrix(m.position_covariance);
     const Matrix3f velocity_covariance_body = rio_covariance_upper_triangle_to_matrix(m.velocity_covariance);
     const Matrix3f attitude_covariance = rio_covariance_upper_triangle_to_matrix(m.attitude_covariance);
-
-    // EKF3 still fuses navigation-frame velocity, so the body-frame packet data is
-    // rotated only for the estimator handoff below.
-    Vector3f velocity_local{m.vx, m.vy, m.vz};
-    velocity_local = attitude_body_to_local * velocity_local;
-    Matrix3f body_to_local;
-    attitude_body_to_local.rotation_matrix(body_to_local);
-    const Matrix3f velocity_covariance_local = body_to_local * velocity_covariance_body * body_to_local.transposed();
 
 #if HAL_LOGGING_ENABLED
     const uint8_t ignored = (uint8_t)!consume;
@@ -4129,18 +4117,11 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
     AP::logger().WriteBlock(&pkt_riostat, sizeof(log_RIOStatus));
 #endif
 
+    // This branch keeps the raw RIO receive/logging path but intentionally
+    // does not hand the data to EKF3 for fusion.
     if (!consume) {
         return;
     }
-
-    AP::ahrs().writeRioNavData(Vector3f{m.x, m.y, m.z},
-                               attitude_body_to_local,
-                               position_covariance_local,
-                               velocity_local,
-                               velocity_covariance_local,
-                               attitude_covariance,
-                               timestamp_ms,
-                               m.reset_counter);
 }
 
 // there are several messages which all have identical fields in them.
