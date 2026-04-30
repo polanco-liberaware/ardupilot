@@ -3954,8 +3954,8 @@ static bool rio_nav_state_is_valid(const mavlink_rio_nav_state_t &m)
         return false;
     }
 
-    Quaternion q{m.q[0], m.q[1], m.q[2], m.q[3]};
-    if (q.is_zero() || !q.is_unit_length()) {
+    const Quaternion attitude_body_to_local{m.q[0], m.q[1], m.q[2], m.q[3]};
+    if (attitude_body_to_local.is_zero() || !attitude_body_to_local.is_unit_length()) {
         return false;
     }
 
@@ -3981,7 +3981,7 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
         return;
     }
 
-    Quaternion q{m.q[0], m.q[1], m.q[2], m.q[3]};
+    const Quaternion attitude_body_to_local{m.q[0], m.q[1], m.q[2], m.q[3]};
     // RIO time_usec is already carried in the FC boot-time domain, so for this
     // path we use the packet timestamp directly instead of the generic
     // offboard lag-correction helper.
@@ -3989,17 +3989,21 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
     const uint32_t now_ms = AP_HAL::millis();
     const uint16_t effective_delay_ms = (timestamp_ms <= now_ms) ? MIN<uint32_t>(now_ms - timestamp_ms, uint32_t(UINT16_MAX)) : 0;
     const bool consume = (m.quality >= visual_odom->get_quality_min());
-
-
-
-    const Matrix3f position_covariance = rio_covariance_upper_triangle_to_matrix(m.position_covariance);
+    // DataFlash logs below intentionally preserve the packet content as received
+    // from the CC: position in LOCAL_FRD, quaternion body->LOCAL_FRD, velocity in
+    // BODY_FRD, position covariance in LOCAL_FRD, velocity covariance in BODY_FRD,
+    // and the compact status/debug block plus FC-derived receive delay.
+    const Matrix3f position_covariance_local = rio_covariance_upper_triangle_to_matrix(m.position_covariance);
     const Matrix3f velocity_covariance_body = rio_covariance_upper_triangle_to_matrix(m.velocity_covariance);
     const Matrix3f attitude_covariance = rio_covariance_upper_triangle_to_matrix(m.attitude_covariance);
-    Vector3f vel{m.vx, m.vy, m.vz};
-    vel = q * vel;
-    Matrix3f body_to_nav;
-    q.rotation_matrix(body_to_nav);
-    const Matrix3f velocity_covariance = body_to_nav * velocity_covariance_body * body_to_nav.transposed();
+
+    // EKF3 still fuses navigation-frame velocity, so the body-frame packet data is
+    // rotated only for the estimator handoff below.
+    Vector3f velocity_local{m.vx, m.vy, m.vz};
+    velocity_local = attitude_body_to_local * velocity_local;
+    Matrix3f body_to_local;
+    attitude_body_to_local.rotation_matrix(body_to_local);
+    const Matrix3f velocity_covariance_local = body_to_local * velocity_covariance_body * body_to_local.transposed();
 
 #if HAL_LOGGING_ENABLED
     const uint8_t ignored = (uint8_t)!consume;
@@ -4022,10 +4026,10 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
         time_us         : AP_HAL::micros64(),
         remote_time_us  : m.time_usec,
         time_ms         : timestamp_ms,
-        quat_w          : q.q1,
-        quat_x          : q.q2,
-        quat_y          : q.q3,
-        quat_z          : q.q4,
+        quat_w          : m.q[0],
+        quat_x          : m.q[1],
+        quat_y          : m.q[2],
+        quat_z          : m.q[3],
         reset_counter   : m.reset_counter,
         ignored         : ignored,
         quality         : m.quality
@@ -4051,12 +4055,12 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
         time_us         : AP_HAL::micros64(),
         remote_time_us  : m.time_usec,
         time_ms         : timestamp_ms,
-        pos_cov_xx      : position_covariance.a.x,
-        pos_cov_xy      : position_covariance.a.y,
-        pos_cov_xz      : position_covariance.a.z,
-        pos_cov_yy      : position_covariance.b.y,
-        pos_cov_yz      : position_covariance.b.z,
-        pos_cov_zz      : position_covariance.c.z,
+        pos_cov_xx      : position_covariance_local.a.x,
+        pos_cov_xy      : position_covariance_local.a.y,
+        pos_cov_xz      : position_covariance_local.a.z,
+        pos_cov_yy      : position_covariance_local.b.y,
+        pos_cov_yz      : position_covariance_local.b.z,
+        pos_cov_zz      : position_covariance_local.c.z,
         reset_counter   : m.reset_counter,
         ignored         : ignored,
         quality         : m.quality
@@ -4130,10 +4134,10 @@ void GCS_MAVLINK::handle_rio_nav_state(const mavlink_message_t &msg)
     }
 
     AP::ahrs().writeRioNavData(Vector3f{m.x, m.y, m.z},
-                               q,
-                               position_covariance,
-                               vel,
-                               velocity_covariance,
+                               attitude_body_to_local,
+                               position_covariance_local,
+                               velocity_local,
+                               velocity_covariance_local,
                                attitude_covariance,
                                timestamp_ms,
                                m.reset_counter);

@@ -391,6 +391,7 @@ void NavEKF3_core::InitialiseVariables()
     extNavVelToFuse = false;
     useExtNavVel = false;
     extNavVelMeasTime_ms = 0;
+    extNavLastResetCounter = 0;
 #endif
 
     // zero data buffers

@@ -1633,6 +1633,29 @@ void NavEKF3::writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeSt
     }
 }
 
+void NavEKF3::writeRioNavData(const Vector3f &pos,
+                              const Quaternion &quat,
+                              const Matrix3f &position_covariance,
+                              const Vector3f &vel,
+                              const Matrix3f &velocity_covariance,
+                              const Matrix3f &attitude_covariance,
+                              uint32_t measurement_time_ms,
+                              uint8_t reset_counter)
+{
+    if (core) {
+        for (uint8_t i = 0; i < num_cores; i++) {
+            core[i].writeRioNavData(pos,
+                                    quat,
+                                    position_covariance,
+                                    vel,
+                                    velocity_covariance,
+                                    attitude_covariance,
+                                    measurement_time_ms,
+                                    reset_counter);
+        }
+    }
+}
+
 // return data for debugging optical flow fusion
 /*
  * Write body frame linear and angular displacement measurements from a visual odometry sensor

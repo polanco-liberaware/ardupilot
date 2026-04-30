@@ -353,6 +353,15 @@ public:
     */
     void writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeStamp_ms, uint16_t delay_ms);
 
+    void writeRioNavData(const Vector3f &pos,
+                         const Quaternion &quat,
+                         const Matrix3f &position_covariance,
+                         const Vector3f &vel,
+                         const Matrix3f &velocity_covariance,
+                         const Matrix3f &attitude_covariance,
+                         uint32_t measurement_time_ms,
+                         uint8_t reset_counter);
+
     // Set to true if the terrain underneath is stable enough to be used as a height reference
     // in combination with a range finder. Set to false if the terrain underneath the vehicle
     // cannot be used as a height reference. Use to prevent range finder operation otherwise
@@ -656,6 +665,9 @@ private:
     struct ext_nav_elements : EKF_obs_element_t {
         Vector3F        pos;        // XYZ position measured in a RH navigation frame (m)
         ftype           posErr;     // spherical position measurement error 1-std (m)
+        Matrix3F        posCov;     // full XYZ position covariance in navigation frame (m^2)
+        Matrix3F        attCov;     // small-angle attitude covariance (rad^2)
+        bool            hasCovariance; // true when full covariance came from RIO_NAV_STATE
         bool            posReset;   // true when the position measurement has been reset
         bool            corrected;  // true when the position has been corrected for sensor position
     };
@@ -663,7 +675,9 @@ private:
     struct ext_nav_vel_elements : EKF_obs_element_t {
         Vector3F vel;               // velocity in NED (m/s)
         ftype err;                  // velocity measurement error (m/s)
+        Matrix3F velCov;            // full XYZ velocity covariance in navigation frame ((m/s)^2)
         bool corrected;             // true when the velocity has been corrected for sensor position
+        bool hasCovariance;         // true when full covariance came from RIO_NAV_STATE
     };
 
     struct drag_elements : EKF_obs_element_t {
@@ -1016,6 +1030,20 @@ private:
 
     // correct external navigation earth-frame velocity using sensor body-frame offset
     void CorrectExtNavVelForSensorOffset(ext_nav_vel_elements &ext_nav_vel_data) const;
+
+    bool CalculateDirectStateGroupInnovations(const uint8_t state_indices[3],
+                                             const Vector3F &observations,
+                                             const Matrix3F &observation_covariance,
+                                             uint8_t observation_count,
+                                             ftype innovation_gate,
+                                             Vector3F &innovations,
+                                             Matrix3F &innovation_covariance,
+                                             ftype &test_ratio) const;
+
+    bool FuseDirectStateGroup(const uint8_t state_indices[3],
+                              const Vector3F &innovations,
+                              const Matrix3F &innovation_covariance,
+                              uint8_t observation_count);
 
     // calculate velocity variances and innovations
     // Scale factor applied to NE velocity measurement variance due to manoeuvre acceleration
@@ -1478,6 +1506,7 @@ private:
     ext_nav_elements extNavDataDelayed; // External nav at the fusion time horizon
     uint32_t extNavMeasTime_ms;         // time external measurements were accepted for input to the data buffer (msec)
     uint32_t extNavLastPosResetTime_ms; // last time the external nav systen performed a position reset (msec)
+    uint8_t extNavLastResetCounter;     // last reset counter seen from covariance-preserving RIO packets
     bool extNavDataToFuse;              // true when there is new external nav data to fuse
     bool extNavUsedForPos;              // true when the external nav data is being used as a position reference.
     EKF_obs_buffer_t<ext_nav_vel_elements> storedExtNavVel;    // external navigation velocity data buffer

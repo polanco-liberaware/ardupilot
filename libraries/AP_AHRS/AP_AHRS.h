@@ -308,6 +308,16 @@ public:
     // Write velocity data from an external navigation system
     void writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeStamp_ms, uint16_t delay_ms);
 
+    // Write a covariance-preserving RIO navigation sample using a timestamp already corrected into the FC boot-time domain.
+    void writeRioNavData(const Vector3f &pos,
+                         const Quaternion &quat,
+                         const Matrix3f &position_covariance,
+                         const Vector3f &vel,
+                         const Matrix3f &velocity_covariance,
+                         const Matrix3f &attitude_covariance,
+                         uint32_t measurement_time_ms,
+                         uint8_t reset_counter);
+
     // get speed limit
     void getControlLimits(float &ekfGndSpdLimit, float &controlScaleXY) const;
     float getControlScaleZ(void) const;

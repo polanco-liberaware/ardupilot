@@ -1054,6 +1054,44 @@ void NavEKF3_core::writeDefaultAirSpeed(float airspeed, float uncertainty)
 *            External Navigation Measurements           *
 ********************************************************/
 
+static ftype rio_attitude_covariance_to_yaw_variance(const Quaternion &attitude, const Matrix3f &attitude_covariance)
+{
+    const float delta_rad = 1.0e-3f;
+    float unused_roll;
+    float unused_pitch;
+    float base_yaw;
+    attitude.to_euler(unused_roll, unused_pitch, base_yaw);
+
+    Vector3f yaw_jacobian;
+    for (uint8_t axis = 0; axis < 3; axis++) {
+        Vector3f delta_angle;
+        delta_angle[axis] = delta_rad;
+
+        Quaternion q_plus = attitude;
+        q_plus.rotate(delta_angle);
+        q_plus.normalize();
+
+        Quaternion q_minus = attitude;
+        q_minus.rotate(-delta_angle);
+        q_minus.normalize();
+
+        float plus_roll;
+        float plus_pitch;
+        float yaw_plus;
+        q_plus.to_euler(plus_roll, plus_pitch, yaw_plus);
+
+        float minus_roll;
+        float minus_pitch;
+        float yaw_minus;
+        q_minus.to_euler(minus_roll, minus_pitch, yaw_minus);
+
+        yaw_jacobian[axis] = wrap_PI(yaw_plus - yaw_minus) / (2.0f * delta_rad);
+    }
+
+    const Vector3f weighted_jacobian = yaw_jacobian.row_times_mat(attitude_covariance);
+    return MAX((weighted_jacobian * yaw_jacobian), 0.0f);
+}
+
 void NavEKF3_core::writeExtNavData(const Vector3f &pos, const Quaternion &quat, float posErr, float angErr, uint32_t timeStamp_ms, uint16_t delay_ms, uint32_t resetTime_ms)
 {
 #if EK3_FEATURE_EXTERNAL_NAV
@@ -1081,6 +1119,9 @@ void NavEKF3_core::writeExtNavData(const Vector3f &pos, const Quaternion &quat, 
 
     extNavDataNew.pos = pos.toftype();
     extNavDataNew.posErr = posErr;
+    extNavDataNew.posCov = Matrix3F{};
+    extNavDataNew.attCov = Matrix3F{};
+    extNavDataNew.hasCovariance = false;
 
     // calculate timestamp
     timeStamp_ms = timeStamp_ms - delay_ms;
@@ -1134,8 +1175,72 @@ void NavEKF3_core::writeExtNavVelData(const Vector3f &vel, float err, uint32_t t
     extNavVelNew.vel = vel.toftype();
     extNavVelNew.err = err;
     extNavVelNew.corrected = false;
+    extNavVelNew.velCov = Matrix3F{};
+    extNavVelNew.hasCovariance = false;
 
     storedExtNavVel.push(extNavVelNew);
+#endif // EK3_FEATURE_EXTERNAL_NAV
+}
+
+void NavEKF3_core::writeRioNavData(const Vector3f &pos,
+                                   const Quaternion &quat,
+                                   const Matrix3f &position_covariance,
+                                   const Vector3f &vel,
+                                   const Matrix3f &velocity_covariance,
+                                   const Matrix3f &attitude_covariance,
+                                   uint32_t measurement_time_ms,
+                                   uint8_t reset_counter)
+{
+#if EK3_FEATURE_EXTERNAL_NAV
+    if (pos.is_nan() || vel.is_nan() || quat.is_nan()) {
+        return;
+    }
+
+    if ((measurement_time_ms - extNavMeasTime_ms) < frontend->extNavIntervalMin_ms || !statesInitialised) {
+        return;
+    }
+    if ((measurement_time_ms - extNavVelMeasTime_ms) < frontend->extNavIntervalMin_ms) {
+        return;
+    }
+
+    extNavMeasTime_ms = measurement_time_ms;
+    extNavVelMeasTime_ms = measurement_time_ms;
+    useExtNavVel = true;
+
+    uint32_t fusion_time_ms = measurement_time_ms;
+    fusion_time_ms -= localFilterTimeStep_ms / 2;
+    fusion_time_ms = MAX(fusion_time_ms, imuDataDelayed.time_ms);
+
+    ext_nav_elements extNavDataNew {};
+    extNavDataNew.time_ms = fusion_time_ms;
+    extNavDataNew.pos = pos.toftype();
+    extNavDataNew.posCov = Matrix3F(position_covariance.a.toftype(), position_covariance.b.toftype(), position_covariance.c.toftype());
+    extNavDataNew.attCov = Matrix3F(attitude_covariance.a.toftype(), attitude_covariance.b.toftype(), attitude_covariance.c.toftype());
+    extNavDataNew.posErr = sqrtF(MAX(MAX(extNavDataNew.posCov.a.x, extNavDataNew.posCov.b.y), extNavDataNew.posCov.c.z));
+    extNavDataNew.hasCovariance = true;
+    extNavDataNew.corrected = false;
+    extNavDataNew.posReset = (reset_counter != extNavLastResetCounter);
+    extNavLastResetCounter = reset_counter;
+    storedExtNav.push(extNavDataNew);
+
+    ext_nav_vel_elements extNavVelNew {};
+    extNavVelNew.time_ms = fusion_time_ms;
+    extNavVelNew.vel = vel.toftype();
+    extNavVelNew.velCov = Matrix3F(velocity_covariance.a.toftype(), velocity_covariance.b.toftype(), velocity_covariance.c.toftype());
+    extNavVelNew.err = sqrtF(MAX(MAX(extNavVelNew.velCov.a.x, extNavVelNew.velCov.b.y), extNavVelNew.velCov.c.z));
+    extNavVelNew.corrected = false;
+    extNavVelNew.hasCovariance = true;
+    storedExtNavVel.push(extNavVelNew);
+
+    ftype roll_rad, pitch_rad, yaw_rad;
+    quat.to_euler(roll_rad, pitch_rad, yaw_rad);
+    yaw_elements extNavYawAngDataNew;
+    extNavYawAngDataNew.yawAng = yaw_rad;
+    const ftype yaw_variance = rio_attitude_covariance_to_yaw_variance(quat, attitude_covariance);
+    extNavYawAngDataNew.yawAngErr = MAX(sqrtF(yaw_variance), radians(5.0f));
+    extNavYawAngDataNew.order = rotationOrder::TAIT_BRYAN_321;
+    extNavYawAngDataNew.time_ms = fusion_time_ms;
+    storedExtNavYawAng.push(extNavYawAngDataNew);
 #endif // EK3_FEATURE_EXTERNAL_NAV
 }
 

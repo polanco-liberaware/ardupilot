@@ -478,7 +478,11 @@ void NavEKF3_core::setAidingMode()
                 }
                 // handle height reset as special case
                 hgtMea = -extNavDataDelayed.pos.z;
-                posDownObsNoise = sq(constrain_ftype(extNavDataDelayed.posErr, 0.1f, 10.0f));
+                if (extNavDataDelayed.hasCovariance) {
+                    posDownObsNoise = constrain_ftype(extNavDataDelayed.posCov.c.z, sq(0.1f), sq(10.0f));
+                } else {
+                    posDownObsNoise = sq(constrain_ftype(extNavDataDelayed.posErr, 0.1f, 10.0f));
+                }
                 ResetHeight();
 #endif // EK3_FEATURE_EXTERNAL_NAV
             }

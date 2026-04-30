@@ -2447,6 +2447,27 @@ void AP_AHRS::writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeSt
 #endif
 }
 
+void AP_AHRS::writeRioNavData(const Vector3f &pos,
+                              const Quaternion &quat,
+                              const Matrix3f &position_covariance,
+                              const Vector3f &vel,
+                              const Matrix3f &velocity_covariance,
+                              const Matrix3f &attitude_covariance,
+                              uint32_t measurement_time_ms,
+                              uint8_t reset_counter)
+{
+#if HAL_NAVEKF3_AVAILABLE
+    EKF3.writeRioNavData(pos,
+                         quat,
+                         position_covariance,
+                         vel,
+                         velocity_covariance,
+                         attitude_covariance,
+                         measurement_time_ms,
+                         reset_counter);
+#endif
+}
+
 // get speed limit and XY navigation gain scale factor
 void AP_AHRS::getControlLimits(float &ekfGndSpdLimit, float &ekfNavVelGainScaler) const
 {

@@ -5,6 +5,93 @@
 #include <GCS_MAVLink/GCS.h>
 #include <AP_DAL/AP_DAL.h>
 
+static bool rio_invert_matrix(const Matrix3F &src, uint8_t observation_count, Matrix3F &inv)
+{
+    Matrix3F sym = src;
+    sym.a.y = sym.b.x = 0.5f * (src.a.y + src.b.x);
+    sym.a.z = sym.c.x = 0.5f * (src.a.z + src.c.x);
+    sym.b.z = sym.c.y = 0.5f * (src.b.z + src.c.y);
+
+    inv = Matrix3F{};
+
+    switch (observation_count) {
+    case 1:
+        if (!(sym.a.x > 0.0f) || !isfinite(sym.a.x)) {
+            return false;
+        }
+        inv.a.x = 1.0f / sym.a.x;
+        return true;
+
+    case 2: {
+        if (!(sym.a.x > 0.0f) || !(sym.b.y > 0.0f)) {
+            return false;
+        }
+        const ftype det = sym.a.x * sym.b.y - sq(sym.a.y);
+        if (!(det > 1.0e-6f) || !isfinite(det)) {
+            return false;
+        }
+        const ftype inv_det = 1.0f / det;
+        inv.a.x =  sym.b.y * inv_det;
+        inv.a.y = -sym.a.y * inv_det;
+        inv.b.x = -sym.a.y * inv_det;
+        inv.b.y =  sym.a.x * inv_det;
+        return true;
+    }
+
+    case 3: {
+        if (!(sym.a.x > 0.0f)) {
+            return false;
+        }
+        const ftype det_2x2 = sym.a.x * sym.b.y - sq(sym.a.y);
+        if (!(det_2x2 > 1.0e-6f) || !isfinite(det_2x2)) {
+            return false;
+        }
+        const ftype det = sym.det();
+        if (!(det > 1.0e-6f) || !isfinite(det)) {
+            return false;
+        }
+        return sym.inverse(inv);
+    }
+
+    default:
+        return false;
+    }
+}
+
+static Matrix3F rio_prepare_position_observation_covariance(const Matrix3F &src, bool include_height)
+{
+    Matrix3F cov = src;
+    cov.a.y = cov.b.x = 0.5f * (src.a.y + src.b.x);
+    cov.a.z = cov.c.x = 0.5f * (src.a.z + src.c.x);
+    cov.b.z = cov.c.y = 0.5f * (src.b.z + src.c.y);
+
+    cov.a.x = constrain_ftype(cov.a.x, sq(0.01f), sq(10.0f));
+    cov.b.y = constrain_ftype(cov.b.y, sq(0.01f), sq(10.0f));
+    if (include_height) {
+        cov.c.z = constrain_ftype(cov.c.z, sq(0.1f), sq(10.0f));
+    }
+
+    return cov;
+}
+
+static Matrix3F rio_prepare_velocity_observation_covariance(const Matrix3F &src,
+                                                            bool include_vertical_velocity,
+                                                            ftype manoeuvre_variance)
+{
+    Matrix3F cov = src;
+    cov.a.y = cov.b.x = 0.5f * (src.a.y + src.b.x);
+    cov.a.z = cov.c.x = 0.5f * (src.a.z + src.c.x);
+    cov.b.z = cov.c.y = 0.5f * (src.b.z + src.c.y);
+
+    cov.a.x = constrain_ftype(cov.a.x, sq(0.05f), sq(5.0f)) + manoeuvre_variance;
+    cov.b.y = constrain_ftype(cov.b.y, sq(0.05f), sq(5.0f)) + manoeuvre_variance;
+    if (include_vertical_velocity) {
+        cov.c.z = constrain_ftype(cov.c.z, sq(0.05f), sq(5.0f)) + manoeuvre_variance;
+    }
+
+    return cov;
+}
+
 /********************************************************
 *                   RESET FUNCTIONS                     *
 ********************************************************/
@@ -61,7 +148,12 @@ void NavEKF3_core::ResetVelocity(resetDataSource velResetSource)
             // already corrected for sensor position
             stateStruct.velocity.x = extNavVelDelayed.vel.x;
             stateStruct.velocity.y = extNavVelDelayed.vel.y;
-            P[5][5] = P[4][4] = sq(extNavVelDelayed.err);
+            if (extNavVelDelayed.hasCovariance) {
+                P[4][4] = MAX(extNavVelDelayed.velCov.a.x, 0.0f);
+                P[5][5] = MAX(extNavVelDelayed.velCov.b.y, 0.0f);
+            } else {
+                P[5][5] = P[4][4] = sq(extNavVelDelayed.err);
+            }
 #endif // EK3_FEATURE_EXTERNAL_NAV
         } else {
             stateStruct.velocity.x  = 0.0f;
@@ -159,7 +251,12 @@ void NavEKF3_core::ResetPosition(resetDataSource posResetSource)
             stateStruct.position.x = extNavDataDelayed.pos.x;
             stateStruct.position.y = extNavDataDelayed.pos.y;
             // set the variances as received from external nav system data
-            P[7][7] = P[8][8] = sq(extNavDataDelayed.posErr);
+            if (extNavDataDelayed.hasCovariance) {
+                P[7][7] = MAX(extNavDataDelayed.posCov.a.x, 0.0f);
+                P[8][8] = MAX(extNavDataDelayed.posCov.b.y, 0.0f);
+            } else {
+                P[7][7] = P[8][8] = sq(extNavDataDelayed.posErr);
+            }
 #endif // EK3_FEATURE_EXTERNAL_NAV
         }
     }
@@ -481,6 +578,98 @@ void NavEKF3_core::CorrectExtNavVelForSensorOffset(ext_nav_vel_elements &ext_nav
 #endif
 }
 
+bool NavEKF3_core::CalculateDirectStateGroupInnovations(const uint8_t state_indices[3],
+                                                        const Vector3F &observations,
+                                                        const Matrix3F &observation_covariance,
+                                                        uint8_t observation_count,
+                                                        ftype innovation_gate,
+                                                        Vector3F &innovations,
+                                                        Matrix3F &innovation_covariance,
+                                                        ftype &test_ratio) const
+{
+    innovations.zero();
+    innovation_covariance = Matrix3F{};
+
+    for (uint8_t i = 0; i < observation_count; i++) {
+        innovations[i] = statesArray[state_indices[i]] - observations[i];
+        for (uint8_t j = 0; j < observation_count; j++) {
+            innovation_covariance[i][j] = P[state_indices[i]][state_indices[j]] + observation_covariance[i][j];
+        }
+    }
+
+    Matrix3F innovation_covariance_inv;
+    if (!rio_invert_matrix(innovation_covariance, observation_count, innovation_covariance_inv)) {
+        return false;
+    }
+
+    const Vector3F weighted_innovation = innovation_covariance_inv * innovations;
+    const ftype gate_sigma = MAX(0.01f * innovation_gate, 1.0f);
+    test_ratio = (innovations * weighted_innovation) / sq(gate_sigma);
+    return isfinite(test_ratio);
+}
+
+bool NavEKF3_core::FuseDirectStateGroup(const uint8_t state_indices[3],
+                                        const Vector3F &innovations,
+                                        const Matrix3F &innovation_covariance,
+                                        uint8_t observation_count)
+{
+    Matrix3F innovation_covariance_inv;
+    if (!rio_invert_matrix(innovation_covariance, observation_count, innovation_covariance_inv)) {
+        return false;
+    }
+
+    ftype kalman_gain[24][3] {};
+    ftype observed_state_rows[3][24] {};
+
+    for (uint8_t obs = 0; obs < observation_count; obs++) {
+        for (uint8_t j = 0; j <= stateIndexLim; j++) {
+            observed_state_rows[obs][j] = P[state_indices[obs]][j];
+        }
+    }
+
+    for (uint8_t i = 0; i <= stateIndexLim; i++) {
+        for (uint8_t obs = 0; obs < observation_count; obs++) {
+            for (uint8_t k = 0; k < observation_count; k++) {
+                kalman_gain[i][obs] += P[i][state_indices[k]] * innovation_covariance_inv[k][obs];
+            }
+        }
+    }
+
+    for (uint8_t i = 0; i <= stateIndexLim; i++) {
+        ftype covariance_delta = 0.0f;
+        for (uint8_t obs = 0; obs < observation_count; obs++) {
+            covariance_delta += kalman_gain[i][obs] * observed_state_rows[obs][i];
+        }
+        if (covariance_delta > P[i][i]) {
+            return false;
+        }
+    }
+
+    for (uint8_t i = 0; i <= stateIndexLim; i++) {
+        for (uint8_t j = 0; j <= stateIndexLim; j++) {
+            ftype covariance_delta = 0.0f;
+            for (uint8_t obs = 0; obs < observation_count; obs++) {
+                covariance_delta += kalman_gain[i][obs] * observed_state_rows[obs][j];
+            }
+            P[i][j] -= covariance_delta;
+        }
+    }
+
+    ForceSymmetry();
+    ConstrainVariances();
+
+    for (uint8_t i = 0; i <= stateIndexLim; i++) {
+        ftype state_correction = 0.0f;
+        for (uint8_t obs = 0; obs < observation_count; obs++) {
+            state_correction += kalman_gain[i][obs] * innovations[obs];
+        }
+        statesArray[i] -= state_correction;
+    }
+    stateStruct.quat.normalize();
+
+    return true;
+}
+
 // calculate velocity variance helper function
 void NavEKF3_core::CalculateVelInnovationsAndVariances(const Vector3F &velocity, ftype noise, ftype accel_scale, Vector3F &innovations, Vector3F &variances) const
 {
@@ -522,7 +711,15 @@ void NavEKF3_core::SelectVelPosFusion()
         CorrectExtNavVelForSensorOffset(extNavVelDelayed);
 
         // calculate innovations and variances for reporting purposes only
-        CalculateVelInnovationsAndVariances(extNavVelDelayed.vel, extNavVelDelayed.err, frontend->extNavVelVarAccScale, extNavVelInnov, extNavVelVarInnov);
+        if (extNavVelDelayed.hasCovariance) {
+            const ftype manoeuvre_variance = sq(frontend->extNavVelVarAccScale * accNavMag);
+            extNavVelInnov = stateStruct.velocity - extNavVelDelayed.vel;
+            extNavVelVarInnov.x = P[4][4] + MAX(extNavVelDelayed.velCov.a.x, 0.0f) + manoeuvre_variance;
+            extNavVelVarInnov.y = P[5][5] + MAX(extNavVelDelayed.velCov.b.y, 0.0f) + manoeuvre_variance;
+            extNavVelVarInnov.z = P[6][6] + MAX(extNavVelDelayed.velCov.c.z, 0.0f) + manoeuvre_variance;
+        } else {
+            CalculateVelInnovationsAndVariances(extNavVelDelayed.vel, extNavVelDelayed.err, frontend->extNavVelVarAccScale, extNavVelInnov, extNavVelVarInnov);
+        }
 
         // record time innovations were calculated (for timeout checks)
         extNavVelInnovTime_ms = dal.millis();
@@ -704,6 +901,14 @@ void NavEKF3_core::FuseVelPosNED()
     // so we might as well take advantage of the computational efficiencies
     // associated with sequential fusion
     if (fuseVelData || fusePosData || fuseHgtData) {
+        const bool rio_covariance_velocity = extNavVelToFuse &&
+                                             extNavVelDelayed.hasCovariance &&
+                                             frontend->sources.useVelXYSource(AP_NavEKF_Source::SourceXY::EXTNAV);
+        const bool rio_covariance_position = extNavUsedForPos && extNavDataDelayed.hasCovariance;
+        const bool rio_covariance_height = rio_covariance_position &&
+                                           fuseHgtData &&
+                                           (activeHgtSource == AP_NavEKF_Source::SourceZ::EXTNAV);
+
         // calculate additional error in GPS position caused by manoeuvring
         ftype posErr = frontend->gpsPosVarAccScale * accNavMag;
 
@@ -731,32 +936,52 @@ void NavEKF3_core::FuseVelPosNED()
                 R_OBS[2] = sq(constrain_ftype(gpsSpdAccuracy, frontend->_gpsVertVelNoise, 50.0f));
 #if EK3_FEATURE_EXTERNAL_NAV
             } else if (extNavVelToFuse) {
-                R_OBS[2] = R_OBS[0] = sq(constrain_ftype(extNavVelDelayed.err, 0.05f, 5.0f));
+                if (extNavVelDelayed.hasCovariance) {
+                    R_OBS[0] = constrain_ftype(extNavVelDelayed.velCov.a.x, sq(0.05f), sq(5.0f));
+                    R_OBS[1] = constrain_ftype(extNavVelDelayed.velCov.b.y, sq(0.05f), sq(5.0f));
+                    R_OBS[2] = constrain_ftype(extNavVelDelayed.velCov.c.z, sq(0.05f), sq(5.0f));
+                } else {
+                    R_OBS[2] = R_OBS[0] = sq(constrain_ftype(extNavVelDelayed.err, 0.05f, 5.0f));
+                }
 #endif
             } else {
                 // calculate additional error in GPS velocity caused by manoeuvring
                 R_OBS[0] = sq(constrain_ftype(frontend->_gpsHorizVelNoise, 0.05f, 5.0f)) + sq(frontend->gpsNEVelVarAccScale * accNavMag);
                 R_OBS[2] = sq(constrain_ftype(frontend->_gpsVertVelNoise,  0.05f, 5.0f)) + sq(frontend->gpsDVelVarAccScale  * accNavMag);
             }
-            R_OBS[1] = R_OBS[0];
+            if (!(extNavVelToFuse && extNavVelDelayed.hasCovariance)) {
+                R_OBS[1] = R_OBS[0];
+            }
             // Use GPS reported position accuracy if available and floor at value set by GPS position noise parameter
             if (gpsPosAccuracy > 0.0f) {
                 R_OBS[3] = sq(constrain_ftype(gpsPosAccuracy, frontend->_gpsHorizPosNoise, 100.0f));
 #if EK3_FEATURE_EXTERNAL_NAV
             } else if (extNavUsedForPos) {
-                R_OBS[3] = sq(constrain_ftype(extNavDataDelayed.posErr, 0.01f, 10.0f));
+                if (extNavDataDelayed.hasCovariance) {
+                    R_OBS[3] = constrain_ftype(extNavDataDelayed.posCov.a.x, sq(0.01f), sq(10.0f));
+                    R_OBS[4] = constrain_ftype(extNavDataDelayed.posCov.b.y, sq(0.01f), sq(10.0f));
+                } else {
+                    R_OBS[3] = sq(constrain_ftype(extNavDataDelayed.posErr, 0.01f, 10.0f));
+                }
 #endif
             } else {
                 R_OBS[3] = sq(constrain_ftype(frontend->_gpsHorizPosNoise, 0.1f, 10.0f)) + sq(posErr);
             }
-            R_OBS[4] = R_OBS[3];
+            if (!(extNavUsedForPos && extNavDataDelayed.hasCovariance)) {
+                R_OBS[4] = R_OBS[3];
+            }
             // For data integrity checks we use the same measurement variances as used to calculate the Kalman gains for all measurements except GPS horizontal velocity
             // For horizontal GPS velocity we don't want the acceptance radius to increase with reported GPS accuracy so we use a value based on best GPS performance
             // plus a margin for manoeuvres. It is better to reject GPS horizontal velocity errors early
             ftype obs_data_chk;
 #if EK3_FEATURE_EXTERNAL_NAV
             if (extNavVelToFuse) {
-                obs_data_chk = sq(constrain_ftype(extNavVelDelayed.err, 0.05f, 5.0f)) + sq(frontend->extNavVelVarAccScale * accNavMag);
+                if (extNavVelDelayed.hasCovariance) {
+                    const ftype max_vel_var = MAX(MAX(extNavVelDelayed.velCov.a.x, extNavVelDelayed.velCov.b.y), extNavVelDelayed.velCov.c.z);
+                    obs_data_chk = constrain_ftype(max_vel_var, sq(0.05f), sq(5.0f)) + sq(frontend->extNavVelVarAccScale * accNavMag);
+                } else {
+                    obs_data_chk = sq(constrain_ftype(extNavVelDelayed.err, 0.05f, 5.0f)) + sq(frontend->extNavVelVarAccScale * accNavMag);
+                }
             } else
 #endif
             {
@@ -801,31 +1026,85 @@ void NavEKF3_core::FuseVelPosNED()
 
         // Test horizontal position measurements
         if (fusePosData) {
-            innovVelPos[3] = stateStruct.position.x - velPosObs[3];
-            innovVelPos[4] = stateStruct.position.y - velPosObs[4];
-            varInnovVelPos[3] = P[7][7] + R_OBS_DATA_CHECKS[3];
-            varInnovVelPos[4] = P[8][8] + R_OBS_DATA_CHECKS[4];
+            if (rio_covariance_position) {
+                const Matrix3F position_observation_covariance =
+                    rio_prepare_position_observation_covariance(extNavDataDelayed.posCov, rio_covariance_height);
 
-            // Apply an innovation consistency threshold test
-            // Don't allow test to fail if not navigating and using a constant position
-            // assumption to constrain tilt errors because innovations can become large
-            // due to vehicle motion.
-            ftype maxPosInnov2 = sq(MAX(0.01 * (ftype)frontend->_gpsPosInnovGate, 1.0))*(varInnovVelPos[3] + varInnovVelPos[4]);
+                const uint8_t position_state_indices[3] {7, 8, 9};
+                const Vector3F position_observations{velPosObs[3], velPosObs[4], velPosObs[5]};
+                Vector3F position_innovations;
+                Matrix3F position_innovation_covariance;
+                const uint8_t position_observation_count = rio_covariance_height ? 3 : 2;
+                const ftype position_gate = rio_covariance_height ?
+                    MIN((ftype)frontend->_gpsPosInnovGate, (ftype)frontend->_hgtInnovGate) :
+                    (ftype)frontend->_gpsPosInnovGate;
 
-            posTestRatio = (sq(innovVelPos[3]) + sq(innovVelPos[4])) / maxPosInnov2;
-            if (posTestRatio < 1.0f || (PV_AidingMode == AID_NONE)) {
-                posCheckPassed = true;
-                lastGpsPosPassTime_ms = imuSampleTime_ms;
-            } else if ((frontend->_gpsGlitchRadiusMax <= 0) && (PV_AidingMode != AID_NONE)) {
-                // Handle the special case where the glitch radius parameter has been set to a non-positive number.
-                // The innovation variance is increased to limit the state update to an amount corresponding
-                // to a test ratio of 1.
-                posCheckPassed = true;
-                lastGpsPosPassTime_ms = imuSampleTime_ms;
-                varInnovVelPos[3] *= posTestRatio;
-                varInnovVelPos[4] *= posTestRatio;
-                posCheckPassed = true;
-                lastGpsPosPassTime_ms = imuSampleTime_ms;
+                if (CalculateDirectStateGroupInnovations(position_state_indices,
+                                                         position_observations,
+                                                         position_observation_covariance,
+                                                         position_observation_count,
+                                                         position_gate,
+                                                         position_innovations,
+                                                         position_innovation_covariance,
+                                                         posTestRatio)) {
+                    innovVelPos[3] = position_innovations.x;
+                    innovVelPos[4] = position_innovations.y;
+                    varInnovVelPos[3] = position_innovation_covariance.a.x;
+                    varInnovVelPos[4] = position_innovation_covariance.b.y;
+                    if (rio_covariance_height) {
+                        innovVelPos[5] = position_innovations.z;
+                        varInnovVelPos[5] = position_innovation_covariance.c.z;
+                        hgtTestRatio = posTestRatio;
+                    }
+                } else {
+                    posTestRatio = 1.0e6f;
+                    if (rio_covariance_height) {
+                        hgtTestRatio = posTestRatio;
+                    }
+                }
+
+                if (posTestRatio < 1.0f || (PV_AidingMode == AID_NONE)) {
+                    posCheckPassed = true;
+                    lastGpsPosPassTime_ms = imuSampleTime_ms;
+                    if (rio_covariance_height) {
+                        hgtCheckPassed = true;
+                        lastHgtPassTime_ms = imuSampleTime_ms;
+                    }
+                } else if ((frontend->_gpsGlitchRadiusMax <= 0) && (PV_AidingMode != AID_NONE)) {
+                    posCheckPassed = true;
+                    lastGpsPosPassTime_ms = imuSampleTime_ms;
+                    if (rio_covariance_height) {
+                        hgtCheckPassed = true;
+                        lastHgtPassTime_ms = imuSampleTime_ms;
+                    }
+                }
+            } else {
+                innovVelPos[3] = stateStruct.position.x - velPosObs[3];
+                innovVelPos[4] = stateStruct.position.y - velPosObs[4];
+                varInnovVelPos[3] = P[7][7] + R_OBS_DATA_CHECKS[3];
+                varInnovVelPos[4] = P[8][8] + R_OBS_DATA_CHECKS[4];
+
+                // Apply an innovation consistency threshold test
+                // Don't allow test to fail if not navigating and using a constant position
+                // assumption to constrain tilt errors because innovations can become large
+                // due to vehicle motion.
+                ftype maxPosInnov2 = sq(MAX(0.01 * (ftype)frontend->_gpsPosInnovGate, 1.0))*(varInnovVelPos[3] + varInnovVelPos[4]);
+
+                posTestRatio = (sq(innovVelPos[3]) + sq(innovVelPos[4])) / maxPosInnov2;
+                if (posTestRatio < 1.0f || (PV_AidingMode == AID_NONE)) {
+                    posCheckPassed = true;
+                    lastGpsPosPassTime_ms = imuSampleTime_ms;
+                } else if ((frontend->_gpsGlitchRadiusMax <= 0) && (PV_AidingMode != AID_NONE)) {
+                    // Handle the special case where the glitch radius parameter has been set to a non-positive number.
+                    // The innovation variance is increased to limit the state update to an amount corresponding
+                    // to a test ratio of 1.
+                    posCheckPassed = true;
+                    lastGpsPosPassTime_ms = imuSampleTime_ms;
+                    varInnovVelPos[3] *= posTestRatio;
+                    varInnovVelPos[4] *= posTestRatio;
+                    posCheckPassed = true;
+                    lastGpsPosPassTime_ms = imuSampleTime_ms;
+                }
             }
 
             // Use position data if healthy or timed out or bad IMU data
@@ -876,32 +1155,72 @@ void NavEKF3_core::FuseVelPosNED()
                 imax = 1;
             }
 
-            // Apply an innovation consistency threshold test
-            ftype innovVelSumSq = 0; // sum of squares of velocity innovations
-            ftype varVelSum = 0; // sum of velocity innovation variances
+            if (rio_covariance_velocity) {
+                const bool use_extnav_vel_z = frontend->sources.useVelZSource(AP_NavEKF_Source::SourceZ::EXTNAV) && useExtNavVel;
+                imax = use_extnav_vel_z ? 2 : 1;
 
-            for (uint8_t i = 0; i<=imax; i++) {
-                stateIndex   = i + 4;
-                const float innovation = stateStruct.velocity[i] - velPosObs[i];
-                innovVelSumSq += sq(innovation);
-                varInnovVelPos[i] = P[stateIndex][stateIndex] + R_OBS_DATA_CHECKS[i];
-                varVelSum += varInnovVelPos[i];
-            }
-            velTestRatio = innovVelSumSq / (varVelSum * sq(MAX(0.01 * (ftype)frontend->_gpsVelInnovGate, 1.0)));
-            if (velTestRatio < 1.0) {
-                velCheckPassed = true;
-                lastVelPassTime_ms = imuSampleTime_ms;
-            } else if (frontend->_gpsGlitchRadiusMax <= 0) {
-                // Handle the special case where the glitch radius parameter has been set to a non-positive number.
-                // The innovation variance is increased to limit the state update to an amount corresponding
-                // to a test ratio of 1.
-                posCheckPassed = true;
-                lastGpsPosPassTime_ms = imuSampleTime_ms;
-                for (uint8_t i = 0; i<=imax; i++) {
-                    varInnovVelPos[i] *= velTestRatio;
+                const ftype manoeuvre_variance = sq(frontend->extNavVelVarAccScale * accNavMag);
+                const Matrix3F velocity_observation_covariance =
+                    rio_prepare_velocity_observation_covariance(extNavVelDelayed.velCov,
+                                                                use_extnav_vel_z,
+                                                                manoeuvre_variance);
+
+                const uint8_t velocity_state_indices[3] {4, 5, 6};
+                const Vector3F velocity_observations{velPosObs[0], velPosObs[1], velPosObs[2]};
+                Vector3F velocity_innovations;
+                Matrix3F velocity_innovation_covariance;
+
+                if (CalculateDirectStateGroupInnovations(velocity_state_indices,
+                                                         velocity_observations,
+                                                         velocity_observation_covariance,
+                                                         imax + 1,
+                                                         (ftype)frontend->_gpsVelInnovGate,
+                                                         velocity_innovations,
+                                                         velocity_innovation_covariance,
+                                                         velTestRatio)) {
+                    for (uint8_t i = 0; i <= imax; i++) {
+                        innovVelPos[i] = velocity_innovations[i];
+                        varInnovVelPos[i] = velocity_innovation_covariance[i][i];
+                    }
+                } else {
+                    velTestRatio = 1.0e6f;
                 }
-                velCheckPassed = true;
-                lastVelPassTime_ms = imuSampleTime_ms;
+
+                if (velTestRatio < 1.0) {
+                    velCheckPassed = true;
+                    lastVelPassTime_ms = imuSampleTime_ms;
+                } else if (frontend->_gpsGlitchRadiusMax <= 0) {
+                    velCheckPassed = true;
+                    lastVelPassTime_ms = imuSampleTime_ms;
+                }
+            } else {
+                // Apply an innovation consistency threshold test
+                ftype innovVelSumSq = 0; // sum of squares of velocity innovations
+                ftype varVelSum = 0; // sum of velocity innovation variances
+
+                for (uint8_t i = 0; i<=imax; i++) {
+                    stateIndex   = i + 4;
+                    const float innovation = stateStruct.velocity[i] - velPosObs[i];
+                    innovVelSumSq += sq(innovation);
+                    varInnovVelPos[i] = P[stateIndex][stateIndex] + R_OBS_DATA_CHECKS[i];
+                    varVelSum += varInnovVelPos[i];
+                }
+                velTestRatio = innovVelSumSq / (varVelSum * sq(MAX(0.01 * (ftype)frontend->_gpsVelInnovGate, 1.0)));
+                if (velTestRatio < 1.0) {
+                    velCheckPassed = true;
+                    lastVelPassTime_ms = imuSampleTime_ms;
+                } else if (frontend->_gpsGlitchRadiusMax <= 0) {
+                    // Handle the special case where the glitch radius parameter has been set to a non-positive number.
+                    // The innovation variance is increased to limit the state update to an amount corresponding
+                    // to a test ratio of 1.
+                    posCheckPassed = true;
+                    lastGpsPosPassTime_ms = imuSampleTime_ms;
+                    for (uint8_t i = 0; i<=imax; i++) {
+                        varInnovVelPos[i] *= velTestRatio;
+                    }
+                    velCheckPassed = true;
+                    lastVelPassTime_ms = imuSampleTime_ms;
+                }
             }
 
             // Use velocity data if healthy, timed out or when IMU fault has been detected
@@ -924,7 +1243,7 @@ void NavEKF3_core::FuseVelPosNED()
         }
 
         // Test height measurements
-        if (fuseHgtData) {
+        if (fuseHgtData && !rio_covariance_height) {
             // Calculate height innovations
             innovVelPos[5] = stateStruct.position.z - velPosObs[5];
             varInnovVelPos[5] = P[9][9] + R_OBS_DATA_CHECKS[5];
@@ -991,6 +1310,73 @@ void NavEKF3_core::FuseVelPosNED()
         }
         if (fuseHgtData) {
             fuseData[5] = true;
+        }
+
+        if (rio_covariance_velocity && fuseVelData) {
+            const bool use_extnav_vel_z = frontend->sources.useVelZSource(AP_NavEKF_Source::SourceZ::EXTNAV) && useExtNavVel;
+            const ftype manoeuvre_variance = sq(frontend->extNavVelVarAccScale * accNavMag);
+            const Matrix3F velocity_observation_covariance =
+                rio_prepare_velocity_observation_covariance(extNavVelDelayed.velCov,
+                                                            use_extnav_vel_z,
+                                                            manoeuvre_variance);
+
+            const uint8_t velocity_state_indices[3] {4, 5, 6};
+            const Vector3F velocity_observations{velPosObs[0], velPosObs[1], velPosObs[2]};
+            Vector3F velocity_innovations;
+            Matrix3F velocity_innovation_covariance;
+            const uint8_t velocity_observation_count = use_extnav_vel_z ? 3 : 2;
+
+            if (CalculateDirectStateGroupInnovations(velocity_state_indices,
+                                                     velocity_observations,
+                                                     velocity_observation_covariance,
+                                                     velocity_observation_count,
+                                                     (ftype)frontend->_gpsVelInnovGate,
+                                                     velocity_innovations,
+                                                     velocity_innovation_covariance,
+                                                     velTestRatio) &&
+                FuseDirectStateGroup(velocity_state_indices,
+                                     velocity_innovations,
+                                     velocity_innovation_covariance,
+                                     velocity_observation_count)) {
+                fuseData[0] = false;
+                fuseData[1] = false;
+                if (use_extnav_vel_z) {
+                    fuseData[2] = false;
+                }
+            }
+        }
+
+        if (rio_covariance_position && fusePosData) {
+            const Matrix3F position_observation_covariance =
+                rio_prepare_position_observation_covariance(extNavDataDelayed.posCov, rio_covariance_height);
+
+            const uint8_t position_state_indices[3] {7, 8, 9};
+            const Vector3F position_observations{velPosObs[3], velPosObs[4], velPosObs[5]};
+            Vector3F position_innovations;
+            Matrix3F position_innovation_covariance;
+            const uint8_t position_observation_count = rio_covariance_height ? 3 : 2;
+            const ftype position_gate = rio_covariance_height ?
+                MIN((ftype)frontend->_gpsPosInnovGate, (ftype)frontend->_hgtInnovGate) :
+                (ftype)frontend->_gpsPosInnovGate;
+
+            if (CalculateDirectStateGroupInnovations(position_state_indices,
+                                                     position_observations,
+                                                     position_observation_covariance,
+                                                     position_observation_count,
+                                                     position_gate,
+                                                     position_innovations,
+                                                     position_innovation_covariance,
+                                                     posTestRatio) &&
+                FuseDirectStateGroup(position_state_indices,
+                                     position_innovations,
+                                     position_innovation_covariance,
+                                     position_observation_count)) {
+                fuseData[3] = false;
+                fuseData[4] = false;
+                if (rio_covariance_height) {
+                    fuseData[5] = false;
+                }
+            }
         }
 
         // fuse measurements sequentially
@@ -1311,7 +1697,11 @@ void NavEKF3_core::selectHeightForFusion()
     if (extNavDataToFuse && (activeHgtSource == AP_NavEKF_Source::SourceZ::EXTNAV)) {
         hgtMea = -extNavDataDelayed.pos.z;
         velPosObs[5] = -hgtMea;
-        posDownObsNoise = sq(constrain_ftype(extNavDataDelayed.posErr, 0.1f, 10.0f));
+        if (extNavDataDelayed.hasCovariance) {
+            posDownObsNoise = constrain_ftype(extNavDataDelayed.posCov.c.z, sq(0.1f), sq(10.0f));
+        } else {
+            posDownObsNoise = sq(constrain_ftype(extNavDataDelayed.posErr, 0.1f, 10.0f));
+        }
         fuseHgtData = true;
     } else
 #endif // EK3_FEATURE_EXTERNAL_NAV
